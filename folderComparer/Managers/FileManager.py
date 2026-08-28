@@ -7,23 +7,31 @@ from datetime import datetime
 class FileManager:
 
     @staticmethod
-    def get_files(folder, recursive = True):
-        """Return all files using paths relative to folder."""
+    def get_files(folder, recursive):
+        """Return all files using paths relative to folder.
+
+        If recursive is True, files inside subfolders are included.
+        If recursive is False, only files directly inside folder are included.
+        """
 
         files = set()
 
-        for root, _, filenames in os.walk(folder):
+        if recursive:
+            for root, _, filenames in os.walk(folder):
+                for filename in filenames:
 
-            for filename in filenames:
+                    full_path = os.path.join(root, filename)
+                    relative_path = os.path.relpath(full_path, folder)
 
-                full_path = os.path.join(root, filename)
+                    files.add(relative_path)
 
-                relative_path = os.path.relpath(
-                    full_path,
-                    folder
-                )
+        else:
+            for filename in os.listdir(folder):
 
-                files.add(relative_path)
+                full_path = os.path.join(folder, filename)
+                if os.path.isfile(full_path):
+
+                    files.add(filename)
 
         return files
 
@@ -86,7 +94,7 @@ class FileManager:
             "KB",
             "MB",
             "GB",
-            "TB"
+            "TB",
         ]
 
         value = float(size)
@@ -116,5 +124,5 @@ class FileManager:
             "modified": modified,
             "modified_text": modified.strftime(
                 "%Y-%m-%d %H:%M:%S"
-            )
+            ),
         }

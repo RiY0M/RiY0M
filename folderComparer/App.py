@@ -2,9 +2,11 @@ import os
 import tkinter as tk
 from tkinter import ttk
 
-from ComparisonResult import ComparisonResult
-from FolderManager import FolderManager
-from FileManager import FileManager
+from Objects.ComparisonResult import ComparisonResult
+from Managers.FolderManager import FolderManager
+from Managers.FileManager import FileManager
+
+from Views.ToolTip import ToolTip
 
 
 class App:
@@ -54,23 +56,11 @@ class App:
         },
     }
 
-    FOLDER_COMPARISON_BOTTONS = {
-        "fast_compare": {
-            "label": "Fast comparison",
-            "deep_comparison": False,
-            "display": None,
-        },
-        "deep_compare": {
-            "label": "Deep comparison",
-            "deep_comparison": True,
-            "display": None,
-        },
-    }
-
-    FILTER_BUTTONS = {
-        "all": {
+    FILTERS = {
+        "all_differences": {
             "label": "All",
             "result_name": "all_differences",
+            "files": set(),
             "display": None,
         },
         "different": {
@@ -78,6 +68,7 @@ class App:
             "result_name": "different",
             "color": SUMMARY_LABELS["different"]["color"],
             "bg_color": SUMMARY_LABELS["different"]["bg_color"],
+            "files": set(),
             "display": None,
         },
         "only_a": {
@@ -85,6 +76,7 @@ class App:
             "result_name": "only_a",
             "color": SUMMARY_LABELS["only_a"]["color"],
             "bg_color": SUMMARY_LABELS["only_a"]["bg_color"],
+            "files": set(),
             "display": None,
         },
         "only_b": {
@@ -92,10 +84,11 @@ class App:
             "result_name": "only_b",
             "color": SUMMARY_LABELS["only_b"]["color"],
             "bg_color": SUMMARY_LABELS["only_b"]["bg_color"],
+            "files": set(),
             "display": None,
         },
     }
-    DEFAULT_FILTER = "all"
+    DEFAULT_FILTER = "all_differences"
 
     FILE_ACTIONS = {
         "copy" : {
@@ -128,28 +121,21 @@ class App:
     def __init__(self, root):
 
         self.root = root
-
-        self.root.title(
-            "Folder Comparison"
-        )
-
-        self.root.geometry(
-            "1050x750"
-        )
-
-        self.root.minsize(
-            850,
-            600
-        )
+        self.root.title("Folder Comparison")
+        self.root.geometry("1050x750")
+        self.root.minsize(850, 600)
 
         self.folder_a = tk.StringVar()
         self.folder_b = tk.StringVar()
+        self.deep_comparison = tk.BooleanVar(value=False)
+        self.recursive = tk.BooleanVar(value=True)
 
         self.result = ComparisonResult()
         self.file_container = None
+        self.progress_area_items = []
+        self.folder_area_items = []
 
         self.reset_filter()
-
         self.build_ui()
 
     # =========================================================
@@ -182,57 +168,59 @@ class App:
             pady=10
         )
 
-        self.build_folder_line(frame, 0, 0, "Folder A:", self.folder_a, self.browse_folder_a)
-        self.build_folder_line(frame, 1, 0, "Folder B:", self.folder_b, self.browse_folder_b)
+        self.build_folder_line(frame, 0, 0, "Folder A:", self.folder_a, "Select Folder A")
+        self.build_folder_line(frame, 1, 0, "Folder B:", self.folder_b, "Select Folder B")
 
-    def build_folder_line(self, frame, row, column, label, textvariable, command):
-        ttk.Label(
+    def build_folder_line(self, frame, row, column, label, textvariable, title):
+        label = ttk.Label(
             frame,
             text=label
-        ).grid(
+        )
+
+        label.grid(
             row=row,
             column=column,
             sticky="w",
             pady=5
         )
 
-        ttk.Entry(
+        entry = ttk.Entry(
             frame,
             textvariable=textvariable,
             width=80
-        ).grid(
+        )
+
+        entry.grid(
             row=row,
             column=column+1,
             padx=5,
             sticky="ew"
         )
 
-        ttk.Button(
+        button = ttk.Button(
             frame,
             text="Browse...",
-            command=command
-        ).grid(
+            command=lambda: self.browse_folder(title, textvariable)
+        )
+
+        button.grid(
             row=row,
             column=column+2
         )
 
-    def browse_folder_a(self):
+        self.folder_area_items.append(entry)
+        self.folder_area_items.append(button)
 
-        folder = tk.filedialog.askdirectory(
-            title="Select Folder A"
-        )
+    def browse_folder(self, title, variable):
 
-        if folder:
-            self.folder_a.set(folder)
-
-    def browse_folder_b(self):
-
-        folder = tk.filedialog.askdirectory(
-            title="Select Folder B"
-        )
+        folder = tk.filedialog.askdirectory(title=title)
 
         if folder:
-            self.folder_b.set(folder)
+            variable.set(folder)
+
+    def update_folder_area(self, state):
+        for items in self.folder_area_items:
+            items.config(state=state)
 
     # =========================================================
     # Progress (Done)
@@ -250,12 +238,25 @@ class App:
             pady=5
         )
 
-        for folder_comparison_button in self.FOLDER_COMPARISON_BOTTONS.values():
-            folder_comparison_button["display"] = self.build_comparison_button(
-                frame,
-                folder_comparison_button["label"],
-                folder_comparison_button["deep_comparison"],
-            )
+        compare_button = self.build_comparison_button(frame, "Compare")
+
+        recursive_checkbox = self.build_progress_checkbox(
+            frame, "Recursive", self.recursive,
+            "When enabled, files inside all subfolders are included.\n"
+            "When disabled, only files directly inside the selected\n"
+            "folders are compared."
+        )
+
+        deep_comparison_checkbox = self.build_progress_checkbox(
+            frame, "Deep comparison", self.deep_comparison,
+            "When enabled, files will be compared throught name and content.\n"
+            "When disabled, files will be compared throught name and size.\n"
+            "TLDR: enabled = more accurate, disabled = faster."
+        )
+
+        self.progress_area_items.append(compare_button)
+        self.progress_area_items.append(recursive_checkbox)
+        self.progress_area_items.append(deep_comparison_checkbox)
 
         self.progress = ttk.Progressbar(
             frame,
@@ -279,11 +280,11 @@ class App:
             padx=(10, 0)
         )
 
-    def build_comparison_button(self, frame, text, deep_comparison):
+    def build_comparison_button(self, frame, text):
         button = ttk.Button(
             frame,
             text=text,
-            command=lambda: self.compare_folders(deep_comparison)
+            command=lambda: self.compare_folders(self.deep_comparison.get(), self.recursive.get())
         )
 
         button.pack(
@@ -293,13 +294,26 @@ class App:
 
         return button
 
-    def update_comparison_buttons(self, state):
-    
-        for folder_comparison_button in self.FOLDER_COMPARISON_BOTTONS.values():
-            if folder_comparison_button["display"]:
-                folder_comparison_button["display"].config(
-                    state=state
-                )
+    def build_progress_checkbox(self, frame, label, variable, tooltip):
+        checkbox = ttk.Checkbutton(
+            frame,
+            text=label,
+            variable=variable
+        )
+
+        checkbox.pack(
+            side="left",
+            padx=(0, 15)
+        )
+
+        if tooltip:
+            ToolTip(checkbox, tooltip)
+
+        return checkbox
+
+    def update_progress_area(self, state):
+        for items in self.progress_area_items:
+            items.config(state=state)
 
     # =========================================================
     # Summary (Done)
@@ -372,8 +386,8 @@ class App:
             padx=(0, 8)
         )
 
-        for filter_name in self.FILTER_BUTTONS.keys():
-            self.FILTER_BUTTONS[filter_name]["display"] = self.build_filter_button(frame, filter_name)
+        for filter_name in self.FILTERS.keys():
+            self.FILTERS[filter_name]["display"] = self.build_filter_button(frame, filter_name)
 
         self.update_filter_buttons()
 
@@ -392,7 +406,7 @@ class App:
 
     def update_filter_buttons(self):
 
-        for filter_name, button_info in self.FILTER_BUTTONS.items():
+        for filter_name, button_info in self.FILTERS.items():
             if button_info["display"]:
                 button_info["display"].config(
                     text=("● " if filter_name == self.current_filter else "") + button_info["label"]
@@ -408,7 +422,7 @@ class App:
         self.update_filter_buttons()
 
         if self.file_container:
-            self.populate_file_list()
+            self.populate_file_list(self.result, self.current_filter)
     
     def reset_filter(self):
         self.set_filter(self.DEFAULT_FILTER)
@@ -450,7 +464,7 @@ class App:
         self.file_container.bind(
             "<Configure>",
             lambda event: self.canvas.configure(
-                scrollregion=self.canvas.bbox("all")
+                scrollregion=self.canvas.bbox("all_differences")
             )
         )
 
@@ -518,7 +532,6 @@ class App:
         )
 
         if not FolderManager.is_folder_path_valid(folder_path):
-        
             tk.messagebox.showerror(
                 "Invalid folder",
                 "Folder does not exist."
@@ -527,7 +540,7 @@ class App:
 
         return folder_path
 
-    def compare_folders(self, deep_comparison, recursive = True):
+    def compare_folders(self, deep_comparison, recursive):
 
         self.folder_a_path = self.get_folder_path(self.folder_a)
         self.folder_b_path = self.get_folder_path(self.folder_b)
@@ -586,83 +599,40 @@ class App:
         self.root.update()
 
     def is_scanning(self):
-        self.update_comparison_buttons("disabled")
+        self.update_folder_area("disabled")
+        self.update_progress_area("disabled")
         self.progress["value"] = 0
         self.progress_label.config(text="Scanning...")
         self.root.update()
 
     def scan_complete(self):
-        self.update_comparison_buttons("normal")
         self.update_summary()
-        self.populate_file_list()
+        self.populate_file_list(self.result, self.current_filter)
         self.progress_label.config(text="Comparison complete")
 
     # =========================================================
-    # File list filtering
+    # File list filtering (Done)
     # =========================================================
 
-    def populate_file_list(self):
+    def populate_file_list(self, result, current_filter):
 
         self.clear_file_list()
 
-        if not self.result:
+        if not result:
             return
 
-        # -----------------------------------------------------
-        # Determine which files to display
-        # -----------------------------------------------------
+        for filter_name, filter_info in self.FILTERS.keys():
+            if (current_filter == filter_name):
+                for path in result.all_differences:
 
-        files = []
+                    filter_info["files"].append(
+                        (path, filter_name)
+                    )
 
-        if self.current_filter == "all":
+                break
 
-            for path in self.result.only_a:
 
-                files.append(
-                    (path, "only_a")
-                )
-
-            for path in self.result.only_b:
-
-                files.append(
-                    (path, "only_b")
-                )
-
-            for path in self.result.different:
-
-                files.append(
-                    (path, "different")
-                )
-
-        elif self.current_filter == "different":
-
-            for path in self.result.different:
-
-                files.append(
-                    (path, "different")
-                )
-
-        elif self.current_filter == "only_a":
-
-            for path in self.result.only_a:
-
-                files.append(
-                    (path, "only_a")
-                )
-
-        elif self.current_filter == "only_b":
-
-            for path in self.result.only_b:
-
-                files.append(
-                    (path, "only_b")
-                )
-
-        # -----------------------------------------------------
-        # Create rows
-        # -----------------------------------------------------
-
-        for path, file_type in files:
+        for path, file_type in self.FILTERS[current_filter]["files"]:
 
             self.create_file_row(
                 path,
@@ -675,7 +645,7 @@ class App:
             widget.destroy()
 
     # =========================================================
-    # File row
+    # File row (Done)
     # =========================================================
 
     def build_row(self, frame, path, status, color, background):
@@ -692,7 +662,6 @@ class App:
             pady=2
         )
 
-
         status_label = tk.Label(
             row,
             text=status,
@@ -707,7 +676,6 @@ class App:
             side="left",
             padx=8
         )
-
 
         filename_label = tk.Label(
             row,
@@ -760,10 +728,10 @@ class App:
 
                 color = file_action["color"]
                 background = file_action["bg_color"]
-                status = file_action["color"]["label"].upper()
+                status = file_action["label"].upper()
                 found_in_actions = True
 
-        for filter_name, filter_value in self.FILTER_BUTTONS.items():
+        for filter_name, filter_value in self.FILTERS.items():
             if found_in_actions or found_in_files:
                 break
 
@@ -779,7 +747,9 @@ class App:
         if found_in_actions:
             return
 
-        self.build_row_buttons(row)
+        # TODO replace by this we need to make proper objects
+        # self.build_row_buttons(row, label, command)
+
         # -----------------------------------------------------
         # Only A
         # -----------------------------------------------------
@@ -792,8 +762,8 @@ class App:
                 command=lambda:
                     self.copy_path(
                         path,
-                        self.folder_a.get(),
-                        self.folder_b.get()
+                        self.folder_a_path,
+                        self.folder_b_path
                     )
             )
 
@@ -814,8 +784,8 @@ class App:
                 command=lambda:
                     self.copy_path(
                         path,
-                        self.folder_b.get(),
-                        self.folder_a.get()
+                        self.folder_b_path,
+                        self.folder_a_path
                     )
             )
 
@@ -836,8 +806,8 @@ class App:
                 command=lambda:
                     self.copy_path(
                         path,
-                        self.folder_a.get(),
-                        self.folder_b.get()
+                        self.folder_a_path,
+                        self.folder_b_path
                     )
             )
 
@@ -852,8 +822,8 @@ class App:
                 command=lambda:
                     self.copy_path(
                         path,
-                        self.folder_b.get(),
-                        self.folder_a.get()
+                        self.folder_b_path,
+                        self.folder_a_path
                     )
             )
 
@@ -863,7 +833,7 @@ class App:
             )
 
     # =========================================================
-    # Copy
+    # Copy (Done)
     # =========================================================
 
     def copy_path(
@@ -892,4 +862,4 @@ class App:
             return
 
         self.FILE_ACTIONS["copy"]["files"].add(path)
-        self.populate_file_list() # TODO : change to rebuild only concerned line
+        self.populate_file_list(self.result, self.current_filter) # TODO : change to rebuild only concerned line

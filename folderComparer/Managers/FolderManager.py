@@ -1,7 +1,7 @@
 import os
 
-from ComparisonResult import ComparisonResult
-from FileManager import FileManager
+from Objects.ComparisonResult import ComparisonResult
+from Managers.FileManager import FileManager
 
 
 class FolderManager:
