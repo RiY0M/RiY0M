@@ -621,11 +621,26 @@ class App:
         if not result:
             return
 
-        for filter_name, filter_info in self.FILTERS.keys():
-            if (current_filter == filter_name):
-                for path in result.all_differences:
+        # TODO begin : remove this bloc
+        # Color problem if we don't do this because result doesn't specify to
+        # which group the file belongs to other than being in the correct list,
+        # which is an issue when there are merged
 
-                    filter_info["files"].append(
+        sepecific_case = "all_differences"
+        if current_filter == sepecific_case:
+            other_filters = dict(self.FILTERS)
+            del other_filters[sepecific_case]
+
+            for filter_name in other_filters:
+                self.populate_file_list(result, filter_name)
+            return
+        # TODO end
+
+        for filter_name, filter_info in self.FILTERS.items():
+            if current_filter == filter_name and len(filter_info["files"]) == 0:
+                for path in getattr(result, filter_name):
+
+                    filter_info["files"].add(
                         (path, filter_name)
                     )
 
@@ -719,12 +734,15 @@ class App:
 
         found_in_actions = False
         found_in_files = False
+        color = None
+        background = None
+        status = None
 
         for file_action in self.FILE_ACTIONS.values():
             if found_in_actions:
                 break
 
-            if path in file_action["files"]:
+            if path in file_action["files"] and "color" in file_action:
 
                 color = file_action["color"]
                 background = file_action["bg_color"]
@@ -735,7 +753,7 @@ class App:
             if found_in_actions or found_in_files:
                 break
 
-            if file_type == filter_name:
+            if file_type == filter_name and "color" in filter_value:
 
                 color = filter_value["color"]
                 background = filter_value["bg_color"]
@@ -861,5 +879,5 @@ class App:
             )
             return
 
-        self.FILE_ACTIONS["copy"]["files"].add(path)
+        self.FILE_ACTIONS["copy"]["files"].add((path, )) # TODO : add tuple with action name like the filters add their
         self.populate_file_list(self.result, self.current_filter) # TODO : change to rebuild only concerned line
