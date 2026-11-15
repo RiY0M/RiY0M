@@ -1,6 +1,6 @@
 import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 from Objects.ComparisonResult import ComparisonResult
 from Managers.FolderManager import FolderManager
@@ -521,7 +521,7 @@ class App:
         folder_path = folder.get().strip()
 
         if folder_path == "":
-            tk.messagebox.showerror(
+            messagebox.showerror(
                 "Invalid folder",
                 "Folder must not be empty."
             )
@@ -532,7 +532,7 @@ class App:
         )
 
         if not FolderManager.is_folder_path_valid(folder_path):
-            tk.messagebox.showerror(
+            messagebox.showerror(
                 "Invalid folder",
                 "Folder does not exist."
             )
@@ -547,7 +547,7 @@ class App:
 
         if FolderManager.check_same_folders(self.folder_a_path, self.folder_b_path):
 
-            tk.messagebox.showerror(
+            messagebox.showerror(
                 "Invalid folders",
                 "Folder A and Folder B are the same folder."
             )
@@ -871,7 +871,7 @@ class App:
             )
 
         except Exception as error:
-            tk.messagebox.showerror(
+            messagebox.showerror(
                 "Copy error",
                 f"Could not copy:\n\n"
                 f"{path}\n\n"
