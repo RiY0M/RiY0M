@@ -17,6 +17,41 @@ const std::vector<std::filesystem::path>& ComparisonResult::files(FileStatus sta
     return identical; // unreachable: every enumerator is handled above
 }
 
+const std::vector<std::filesystem::path>& ComparisonResult::folders(FileStatus status) const noexcept
+{
+    switch (status) {
+    case FileStatus::Identical:
+        return identicalFolders;
+    case FileStatus::Different:
+        return differentFolders;
+    case FileStatus::OnlyA:
+        return onlyAFolders;
+    case FileStatus::OnlyB:
+        return onlyBFolders;
+    }
+    return identicalFolders; // unreachable: every enumerator is handled above
+}
+
+EntryCounts ComparisonResult::counts(FileStatus status) const noexcept
+{
+    return EntryCounts{.files = files(status).size(), .folders = folders(status).size()};
+}
+
+EntryCounts ComparisonResult::allDifferencesCounts() const noexcept
+{
+    EntryCounts total = counts(FileStatus::Different);
+    total += counts(FileStatus::OnlyA);
+    total += counts(FileStatus::OnlyB);
+    return total;
+}
+
+EntryCounts ComparisonResult::totalCounts() const noexcept
+{
+    EntryCounts total = counts(FileStatus::Identical);
+    total += allDifferencesCounts();
+    return total;
+}
+
 std::vector<FileEntry> ComparisonResult::entries(FileStatus status) const
 {
     const auto& paths = files(status);

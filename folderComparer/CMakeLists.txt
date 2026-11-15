@@ -42,10 +42,12 @@ endfunction()
 # -----------------------------------------------------------------------------
 
 add_library(fc_core STATIC
+    src/core/ActionHistory.cpp
     src/core/ComparisonResult.cpp
     src/core/ComparisonSession.cpp
     src/core/FileManager.cpp
     src/core/FolderManager.cpp
+    src/core/LiveCounts.cpp
     src/core/Presentation.cpp
 )
 target_include_directories(fc_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

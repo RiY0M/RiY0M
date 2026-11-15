@@ -229,68 +229,90 @@ FC_TEST(filesAreIdentical_honors_stop_token)
 }
 
 // ---------------------------------------------------------------------------
-// copyFile
+// listEntries
 // ---------------------------------------------------------------------------
 
-FC_TEST(copyFile_creates_parent_folders_and_copies_content)
+FC_TEST(listEntries_lists_folders_when_recursive)
 {
     const TempDir dir;
-    const auto source = dir.write("A/sub/file.txt", "payload");
-    const auto destination = dir / "B/sub/deeper/file.txt";
+    dir.write("a.txt", "a");
+    dir.write("sub/c.txt", "c");
+    dir.write("sub/deeper/d.txt", "d");
+    dir.makeFolder("empty");
 
-    fc::FileManager::copyFile(source, destination);
+    const auto listing = fc::FileManager::listEntries(dir.path(), true);
+    FC_CHECK_EQ(listing.files, paths({"a.txt", "sub/c.txt", "sub/deeper/d.txt"}));
+    FC_CHECK_EQ(listing.folders, paths({"empty", "sub", "sub/deeper"}));
 
-    FC_REQUIRE(fs::exists(destination));
-    FC_CHECK_EQ(fc::test::readFile(destination), std::string("payload"));
-    FC_CHECK(!fs::exists(dir / "B/sub/deeper/file.txt.fc-partial"));
+    const auto flat = fc::FileManager::listEntries(dir.path(), false);
+    FC_CHECK_EQ(flat.files, paths({"a.txt"}));
+    FC_CHECK(flat.folders.empty());
 }
 
-FC_TEST(copyFile_overwrites_existing_destination)
+FC_TEST(listEntries_ignores_the_trash_folder_at_the_root_only)
 {
     const TempDir dir;
-    const auto source = dir.write("A/file.txt", "new content");
-    const auto destination = dir.write("B/file.txt", "old");
+    dir.write("a.txt", "a");
+    dir.write(fs::path(fc::kTrashFolderName) / "token/1/deleted.txt", "x");
+    dir.write(fs::path("sub") / fc::kTrashFolderName / "kept.txt", "y");
 
-    fc::FileManager::copyFile(source, destination);
-    FC_CHECK_EQ(fc::test::readFile(destination), std::string("new content"));
+    const auto listing = fc::FileManager::listEntries(dir.path(), true);
+    FC_CHECK_EQ(listing.files, (std::vector<fs::path>{"a.txt", fs::path("sub") / fc::kTrashFolderName / "kept.txt"}));
+    FC_CHECK_EQ(listing.folders, (std::vector<fs::path>{"sub", fs::path("sub") / fc::kTrashFolderName}));
 }
 
-FC_TEST(copyFile_preserves_modification_time)
+// ---------------------------------------------------------------------------
+// copyEntry / moveEntry
+// ---------------------------------------------------------------------------
+
+FC_TEST(copyEntry_copies_a_file_with_its_modification_time)
 {
     const TempDir dir;
-    const auto source = dir.write("A/file.txt", "x");
+    const auto source = dir.write("file.txt", "payload");
     const auto time = fs::file_time_type::clock::now() - std::chrono::hours(48);
     fs::last_write_time(source, time);
 
-    const auto destination = dir / "B/file.txt";
-    fc::FileManager::copyFile(source, destination);
-
-    FC_CHECK(fs::last_write_time(destination) == fs::last_write_time(source));
+    fc::FileManager::copyEntry(source, dir / "copy.txt");
+    FC_CHECK_EQ(fc::test::readFile(dir / "copy.txt"), std::string("payload"));
+    FC_CHECK(fs::last_write_time(dir / "copy.txt") == fs::last_write_time(source));
 }
 
-FC_TEST(copyFile_missing_source_throws_with_python_message)
+FC_TEST(copyEntry_copies_a_whole_folder)
 {
     const TempDir dir;
-    try {
-        fc::FileManager::copyFile(dir / "missing.txt", dir / "B/missing.txt");
-        FC_CHECK(false);
-    }
-    catch (const fc::SourceMissingError& error) {
-        const std::string message = error.what();
-        FC_CHECK(message.starts_with("Source file no longer exists:\n\n"));
-        FC_CHECK(message.find("missing.txt") != std::string::npos);
-    }
-    FC_CHECK(!fs::exists(dir / "B"));
+    dir.write("src/a.txt", "a");
+    dir.write("src/sub/b.txt", "b");
+    dir.makeFolder("src/empty");
+
+    fc::FileManager::copyEntry(dir / "src", dir / "dst");
+    const auto listing = fc::FileManager::listEntries(dir / "dst", true);
+    FC_CHECK_EQ(listing.files, paths({"a.txt", "sub/b.txt"}));
+    FC_CHECK_EQ(listing.folders, paths({"empty", "sub"}));
+    FC_CHECK_EQ(fc::test::readFile(dir / "dst/sub/b.txt"), std::string("b"));
 }
 
-FC_TEST(copyFile_failure_leaves_no_partial_file)
+FC_TEST(copyEntry_refuses_an_existing_destination)
 {
     const TempDir dir;
-    const auto source = dir.write("A/file.txt", "x");
-    dir.makeFolder("B/file.txt/child"); // destination is a non-empty folder: rename fails
+    const auto source = dir.write("a.txt", "a");
+    dir.write("b.txt", "b");
+    FC_CHECK_THROWS_AS(fc::FileManager::copyEntry(source, dir / "b.txt"), fs::filesystem_error);
+    FC_CHECK_EQ(fc::test::readFile(dir / "b.txt"), std::string("b"));
+}
 
-    FC_CHECK_THROWS_AS(fc::FileManager::copyFile(source, dir / "B/file.txt"), fs::filesystem_error);
-    FC_CHECK(!fs::exists(dir / "B/file.txt.fc-partial"));
+FC_TEST(moveEntry_moves_files_and_folders_creating_parents)
+{
+    const TempDir dir;
+    dir.write("a.txt", "a");
+    dir.write("folder/b.txt", "b");
+
+    fc::FileManager::moveEntry(dir / "a.txt", dir / "x/y/a.txt");
+    fc::FileManager::moveEntry(dir / "folder", dir / "x/folder");
+
+    FC_CHECK(!fs::exists(dir / "a.txt"));
+    FC_CHECK(!fs::exists(dir / "folder"));
+    FC_CHECK_EQ(fc::test::readFile(dir / "x/y/a.txt"), std::string("a"));
+    FC_CHECK_EQ(fc::test::readFile(dir / "x/folder/b.txt"), std::string("b"));
 }
 
 // ---------------------------------------------------------------------------

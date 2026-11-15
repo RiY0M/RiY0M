@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fc {
@@ -16,7 +17,7 @@ public:
     OperationCancelled() : std::runtime_error("Operation cancelled") {}
 };
 
-/// Raised by FileManager::copyFile when the source vanished (Python: NameError).
+/// Raised when the source of a copy vanished since the comparison.
 class SourceMissingError final : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -32,14 +33,36 @@ public:
 [[nodiscard]] bool pathLess(const std::filesystem::path& left,
                             const std::filesystem::path& right) noexcept;
 
+/// fc::pathLess as a comparator, for std::map / std::set.
+struct PathLess {
+    bool operator()(const std::filesystem::path& left, const std::filesystem::path& right) const noexcept
+    {
+        return pathLess(left, right);
+    }
+};
+
+/// Hidden folder created at the root of a compared folder to keep what was
+/// deleted or overwritten, so that actions can be undone. Never listed.
+inline constexpr std::string_view kTrashFolderName = ".folderComparer-trash";
+
+/// Files and folders of a folder, relative to it, each list sorted with pathLess.
+struct FolderListing {
+    std::vector<std::filesystem::path> files;
+    std::vector<std::filesystem::path> folders;
+};
+
 namespace FileManager {
 
-/// All regular files of `folder`, as sorted paths relative to `folder`.
-/// recursive == true : files of every sub-folder are included (symlinked
-///                     folders are not followed, like os.walk).
-/// recursive == false: only files directly inside `folder`.
+/// Regular files and folders of `folder`, relative to it.
+/// recursive == true : every sub-folder is walked and listed (symlinked folders
+///                     are neither listed nor followed, like os.walk).
+/// recursive == false: only the files directly inside `folder`, no folder.
+/// The trash folder (kTrashFolderName) at the root is ignored.
 /// Throws std::filesystem::filesystem_error if `folder` itself cannot be listed;
 /// unreadable sub-folders are skipped.
+[[nodiscard]] FolderListing listEntries(const std::filesystem::path& folder, bool recursive);
+
+/// listEntries(folder, recursive).files
 [[nodiscard]] std::vector<std::filesystem::path> getFiles(const std::filesystem::path& folder,
                                                           bool recursive);
 
@@ -51,11 +74,14 @@ namespace FileManager {
                                      bool deepComparison = true,
                                      const std::stop_token& stopToken = {});
 
-/// Copy `source` over `destination`, creating missing parent folders and
-/// preserving the modification time (Python: shutil.copy2). The copy goes
-/// through a temporary file so an interrupted copy never leaves a truncated
-/// destination behind.
-void copyFile(const std::filesystem::path& source, const std::filesystem::path& destination);
+/// Copy a file, or a folder with everything inside it, to `destination`, which
+/// must not exist (its parent must). File modification times are preserved.
+/// Symlinked folders inside a copied folder are skipped, like when listing.
+void copyEntry(const std::filesystem::path& source, const std::filesystem::path& destination);
+
+/// Move a file or a folder, creating the missing parents of `destination`.
+/// Falls back to copy + remove when both paths are on different volumes.
+void moveEntry(const std::filesystem::path& source, const std::filesystem::path& destination);
 
 /// Human readable size, identical to the Python output ("1.5 KB", "117.7 MB").
 [[nodiscard]] std::string formatSize(std::uintmax_t size);

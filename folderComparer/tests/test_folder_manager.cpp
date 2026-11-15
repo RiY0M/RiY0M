@@ -89,6 +89,50 @@ FC_TEST(compare_non_recursive)
     FC_CHECK_EQ(result.onlyB, paths({"only_b.txt"}));
 }
 
+FC_TEST(compare_classifies_folders)
+{
+    const TempDir dir;
+    for (const char* side : {"A", "B"}) {
+        const fs::path root = side;
+        dir.write(root / "same/x.txt", "x");
+        dir.write(root / "same/y/z.txt", "z");
+        dir.write(root / "mixed/equal.txt", "e");
+    }
+    dir.write("A/mixed/deep/changed.txt", "1");
+    dir.write("B/mixed/deep/changed.txt", "22");
+    dir.write("A/missing/a.txt", "a");
+    dir.write("A/missing/inner/b.txt", "b");
+    dir.makeFolder("A/missing/empty");
+    dir.write("A/clash/f.txt", "f"); // a folder in A, a file in B
+    dir.write("B/clash", "file");
+    dir.makeFolder("B/only_b_empty");
+
+    const auto result = fc::FolderManager::compare(dir / "A", dir / "B", {.deepComparison = true, .recursive = true});
+
+    FC_CHECK_EQ(result.identicalFolders, paths({"same", "same/y"}));
+    FC_CHECK_EQ(result.differentFolders, paths({"mixed", "mixed/deep"}));
+    FC_CHECK_EQ(result.onlyAFolders, paths({"clash", "missing", "missing/empty", "missing/inner"}));
+    FC_CHECK_EQ(result.onlyBFolders, paths({"only_b_empty"}));
+    FC_CHECK_EQ(result.onlyA, paths({"clash/f.txt", "missing/a.txt", "missing/inner/b.txt"}));
+    FC_CHECK_EQ(result.onlyB, paths({"clash"}));
+    FC_CHECK_EQ(result.different, paths({"mixed/deep/changed.txt"}));
+
+    FC_CHECK(result.counts(fc::FileStatus::OnlyA) == (fc::EntryCounts{.files = 3, .folders = 4}));
+    FC_CHECK(result.counts(fc::FileStatus::Identical) == (fc::EntryCounts{.files = 3, .folders = 2}));
+    FC_CHECK(result.allDifferencesCounts() == (fc::EntryCounts{.files = 5, .folders = 7}));
+    FC_CHECK(result.totalCounts() == (fc::EntryCounts{.files = 8, .folders = 9}));
+}
+
+FC_TEST(compare_non_recursive_lists_no_folder)
+{
+    const Fixture fixture;
+    const auto result = fc::FolderManager::compare(fixture.a, fixture.b, {.deepComparison = true, .recursive = false});
+    FC_CHECK(result.identicalFolders.empty());
+    FC_CHECK(result.differentFolders.empty());
+    FC_CHECK(result.onlyAFolders.empty());
+    FC_CHECK(result.onlyBFolders.empty());
+}
+
 FC_TEST(compare_reports_progress_for_each_common_file)
 {
     const Fixture fixture;

@@ -108,6 +108,9 @@ int run(std::span<char*> argv)
     if (arguments.summary) {
         std::string separator;
         for (const fc::SummaryItem item : fc::kSummaryItems) {
+            if (item == fc::SummaryItem::Skipped) {
+                continue; // no action in the command line tool
+            }
             std::cout << separator << fc::summaryText(item, result);
             separator = "  ";
         }

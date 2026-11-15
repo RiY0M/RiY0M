@@ -88,25 +88,18 @@ bool sameBytes(const fs::path& fileA, const fs::path& fileB, const std::stop_tok
     }
 }
 
-fs::path partialCopyPath(const fs::path& destination)
-{
-    fs::path partial = destination;
-    partial += ".fc-partial";
-    return partial;
-}
-
 } // namespace
 
-std::vector<fs::path> getFiles(const fs::path& folder, bool recursive)
+FolderListing listEntries(const fs::path& folder, bool recursive)
 {
-    std::vector<fs::path> files;
+    FolderListing listing;
     std::vector<fs::path> pending{fs::path{}}; // folders still to list, relative to `folder`
 
     while (!pending.empty()) {
         const fs::path relativeFolder = pending.back();
         pending.pop_back();
-        const fs::path currentFolder = relativeFolder.empty() ? folder : folder / relativeFolder;
         const bool isRoot = relativeFolder.empty();
+        const fs::path currentFolder = isRoot ? folder : folder / relativeFolder;
 
         std::error_code error;
         fs::directory_iterator iterator(currentFolder, fs::directory_options::skip_permission_denied, error);
@@ -119,13 +112,18 @@ std::vector<fs::path> getFiles(const fs::path& folder, bool recursive)
 
         for (const fs::directory_iterator end; iterator != end; iterator.increment(error)) {
             const fs::directory_entry& entry = *iterator;
-            const fs::path relativePath = relativeFolder / entry.path().filename();
+            const fs::path name = entry.path().filename();
+            const fs::path relativePath = relativeFolder / name;
 
             std::error_code statusError;
             if (entry.is_regular_file(statusError)) {
-                files.push_back(relativePath);
+                listing.files.push_back(relativePath);
             }
             else if (recursive && entry.is_directory(statusError) && !entry.is_symlink(statusError)) {
+                if (isRoot && name == fs::path(kTrashFolderName)) {
+                    continue;
+                }
+                listing.folders.push_back(relativePath);
                 pending.push_back(relativePath);
             }
         }
@@ -135,8 +133,14 @@ std::vector<fs::path> getFiles(const fs::path& folder, bool recursive)
         }
     }
 
-    std::ranges::sort(files, pathLess);
-    return files;
+    std::ranges::sort(listing.files, pathLess);
+    std::ranges::sort(listing.folders, pathLess);
+    return listing;
+}
+
+std::vector<fs::path> getFiles(const fs::path& folder, bool recursive)
+{
+    return listEntries(folder, recursive).files;
 }
 
 bool filesAreIdentical(const fs::path& fileA, const fs::path& fileB, bool deepComparison,
@@ -150,44 +154,54 @@ bool filesAreIdentical(const fs::path& fileA, const fs::path& fileB, bool deepCo
         return true;
     }
 
-    // Byte comparison instead of the Python SHA-256: same answer without any
-    // collision risk, and it stops at the first difference.
+    // Byte comparison: no collision risk, and it stops at the first difference.
     return sameBytes(fileA, fileB, stopToken);
 }
 
-void copyFile(const fs::path& source, const fs::path& destination)
+void copyEntry(const fs::path& source, const fs::path& destination)
 {
-    std::error_code existsError;
-    if (!fs::exists(source, existsError)) {
-        throw SourceMissingError("Source file no longer exists:\n\n" + toUtf8(source));
+    if (!fs::is_directory(source)) {
+        fs::copy_file(source, destination);
+        fs::last_write_time(destination, fs::last_write_time(source));
+        return;
     }
 
+    fs::create_directory(destination);
+    for (auto iterator = fs::recursive_directory_iterator(source); iterator != fs::recursive_directory_iterator();
+         ++iterator) {
+        const fs::directory_entry& entry = *iterator;
+        const fs::path target = destination / entry.path().lexically_relative(source);
+
+        if (entry.is_symlink() && entry.is_directory()) {
+            iterator.disable_recursion_pending();
+        }
+        else if (entry.is_directory()) {
+            fs::create_directory(target);
+        }
+        else if (entry.is_regular_file()) {
+            fs::copy_file(entry.path(), target);
+            fs::last_write_time(target, fs::last_write_time(entry.path()));
+        }
+    }
+}
+
+void moveEntry(const fs::path& source, const fs::path& destination)
+{
     if (const fs::path parent = destination.parent_path(); !parent.empty()) {
         fs::create_directories(parent);
     }
 
-    const fs::path partial = partialCopyPath(destination);
-    try {
-        fs::copy_file(source, partial, fs::copy_options::overwrite_existing);
-        fs::last_write_time(partial, fs::last_write_time(source));
+    std::error_code error;
+    fs::rename(source, destination, error);
+    if (!error) {
+        return;
+    }
+    if (error != std::errc::cross_device_link) {
+        throw fs::filesystem_error("Cannot move", source, destination, error);
+    }
 
-        std::error_code renameError;
-        fs::rename(partial, destination, renameError);
-        if (renameError && fs::is_regular_file(destination)) {
-            // Some Windows standard libraries refuse to rename over an existing file.
-            fs::remove(destination);
-            fs::rename(partial, destination);
-        }
-        else if (renameError) {
-            throw fs::filesystem_error("Cannot move the copied file into place", partial, destination,
-                                       renameError);
-        }
-    }
-    catch (...) {
-        std::error_code cleanupError;
-        fs::remove(partial, cleanupError);
-        throw;
-    }
+    copyEntry(source, destination);
+    fs::remove_all(source);
 }
 
 std::string formatSize(std::uintmax_t size)

@@ -7,6 +7,7 @@
 #include <exception>
 #include <iterator>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -35,6 +36,36 @@ std::basic_string<CharT> trimmedString(const std::basic_string<CharT>& text)
         return {};
     }
     return std::basic_string<CharT>(first, last);
+}
+
+/// Folders present on both sides are "different" when anything inside them
+/// differs, "identical" otherwise.
+void classifyCommonFolders(ComparisonResult& result, const std::vector<fs::path>& commonFolders)
+{
+    std::set<fs::path, PathLess> foldersWithDifferences;
+    const auto markParents = [&foldersWithDifferences](const fs::path& path) {
+        for (fs::path parent = path.parent_path(); !parent.empty(); parent = parent.parent_path()) {
+            if (!foldersWithDifferences.insert(parent).second) {
+                break; // its own parents are already marked
+            }
+        }
+    };
+
+    for (const auto* paths : {&result.different, &result.onlyA, &result.onlyB, &result.onlyAFolders,
+                              &result.onlyBFolders}) {
+        for (const fs::path& path : *paths) {
+            markParents(path);
+        }
+    }
+
+    for (const fs::path& folder : commonFolders) {
+        if (foldersWithDifferences.contains(folder)) {
+            result.differentFolders.push_back(folder);
+        }
+        else {
+            result.identicalFolders.push_back(folder);
+        }
+    }
 }
 
 constexpr const char* kInvalidFolderTitle = "Invalid folder";
@@ -67,16 +98,24 @@ ComparisonResult compare(const fs::path& folderA, const fs::path& folderB,
 {
     ComparisonResult result;
 
-    const std::vector<fs::path> filesA = FileManager::getFiles(folderA, options.recursive);
+    const FolderListing listingA = FileManager::listEntries(folderA, options.recursive);
     if (stopToken.stop_requested()) {
         throw OperationCancelled{};
     }
-    const std::vector<fs::path> filesB = FileManager::getFiles(folderB, options.recursive);
+    const FolderListing listingB = FileManager::listEntries(folderB, options.recursive);
 
     std::vector<fs::path> common;
-    std::ranges::set_difference(filesA, filesB, std::back_inserter(result.onlyA), pathLess);
-    std::ranges::set_difference(filesB, filesA, std::back_inserter(result.onlyB), pathLess);
-    std::ranges::set_intersection(filesA, filesB, std::back_inserter(common), pathLess);
+    std::ranges::set_difference(listingA.files, listingB.files, std::back_inserter(result.onlyA), pathLess);
+    std::ranges::set_difference(listingB.files, listingA.files, std::back_inserter(result.onlyB), pathLess);
+    std::ranges::set_intersection(listingA.files, listingB.files, std::back_inserter(common), pathLess);
+
+    std::vector<fs::path> commonFolders;
+    std::ranges::set_difference(listingA.folders, listingB.folders, std::back_inserter(result.onlyAFolders),
+                                pathLess);
+    std::ranges::set_difference(listingB.folders, listingA.folders, std::back_inserter(result.onlyBFolders),
+                                pathLess);
+    std::ranges::set_intersection(listingA.folders, listingB.folders, std::back_inserter(commonFolders),
+                                  pathLess);
 
     const std::size_t total = common.size();
     for (std::size_t index = 0; index < total; ++index) {
@@ -107,6 +146,7 @@ ComparisonResult compare(const fs::path& folderA, const fs::path& folderB,
         }
     }
 
+    classifyCommonFolders(result, commonFolders);
     return result;
 }
 

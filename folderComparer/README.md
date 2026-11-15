@@ -1,18 +1,20 @@
-A little app to compare big folders
+A little app to compare big folders (C++20 + Qt 6).
 
-The implementation is in C++ (`/`, C++20 + Qt 6).
-See `CLAUDE.md` for features, architecture, build and test instructions.
+Compare two folders, see what differs (files and whole missing folders), copy or
+delete each difference, and undo any action. See `CLAUDE.md` for features,
+architecture, build and test instructions.
 
-## Build (C++)
+## Build
 
 ```bash
-cd cpp
-cmake --preset debug -DCMAKE_PREFIX_PATH=<Qt 6 install>   # e.g. C:/Qt/6.12.0/mingw_64 (MinGW: see CLAUDE.md)
-cmake --build --preset debug
-ctest --preset debug
+cmake --preset release -DCMAKE_PREFIX_PATH=<Qt 6 install>   # e.g. C:/Qt/6.12.0/mingw_64 (MinGW: see CLAUDE.md)
+cmake --build --preset release
+ctest --test-dir build/release --output-on-failure
 ```
 
 Without Qt: `cmake --preset core && cmake --build --preset core && ctest --preset core`.
 
 ## Improvements to do
-- add skip and delete buttons for file management
+- detect changes made outside the application (the counts already follow the application's own actions)
+- run long copies / deletions in the background
+- list view (QTreeView) for very large differences
