@@ -1,7 +1,6 @@
 A little app to compare big folders
 
-The reference implementation is now in C++ (`cpp/`, C++20 + Qt 6). The original
-Tkinter version is kept at the root as a specification and for the parity tests.
+The implementation is in C++ (`/`, C++20 + Qt 6).
 See `CLAUDE.md` for features, architecture, build and test instructions.
 
 ## Build (C++)

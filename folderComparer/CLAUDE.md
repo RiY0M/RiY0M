@@ -3,15 +3,6 @@
 Petite application de bureau pour comparer deux gros dossiers (A et B) et
 synchroniser leurs différences fichier par fichier.
 
-Le dépôt contient deux implémentations :
-
-| Dossier | Statut | Rôle |
-|---|---|---|
-| `cpp/` | **Implémentation de référence** | C++20 + Qt 6 Widgets, testée |
-| racine (`App.py`, `Managers/`, `Objects/`, `Views/`) | Historique | Version Tkinter d'origine, conservée comme spécification et pour le test de parité |
-
-Toute nouvelle fonctionnalité se fait dans `cpp/`.
-
 ## Ce que fait l'application
 
 1. **Sélection des dossiers** : deux champs « Folder A » / « Folder B » avec bouton *Browse...*.
