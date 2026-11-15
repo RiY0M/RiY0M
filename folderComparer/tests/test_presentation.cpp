@@ -167,3 +167,13 @@ FC_TEST(progress_percent)
     FC_CHECK(half <= 50);
     FC_CHECK_EQ(fc::progressPercent(SIZE_MAX - 1, SIZE_MAX), 99);
 }
+
+FC_TEST(extension_labels)
+{
+    FC_CHECK_EQ(fc::extensionLabel("photo.jpeg"), std::string("JPEG"));
+    FC_CHECK_EQ(fc::extensionLabel("dir/Movie.Mp4"), std::string("MP4"));
+    FC_CHECK_EQ(fc::extensionLabel("archive.tar.gz"), std::string("GZ"));
+    FC_CHECK_EQ(fc::extensionLabel("README"), std::string(""));
+    FC_CHECK_EQ(fc::extensionLabel(".gitignore"), std::string("")); // a hidden file, not an extension
+    FC_CHECK_EQ(fc::extensionLabel("name."), std::string(""));
+}

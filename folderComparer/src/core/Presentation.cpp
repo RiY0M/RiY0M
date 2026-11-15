@@ -222,6 +222,19 @@ int progressPercent(std::size_t current, std::size_t total) noexcept
     return static_cast<int>(std::min(current / (total / hundred), std::size_t{99}));
 }
 
+std::string extensionLabel(const std::filesystem::path& file)
+{
+    const std::u8string extension = file.extension().u8string(); // ".jpeg", or empty
+    std::string label;
+    for (const char8_t character : extension) {
+        label.push_back(static_cast<char>(character));
+    }
+    if (!label.empty()) {
+        label.erase(0, 1); // the dot
+    }
+    return upperLabel(label);
+}
+
 std::string upperLabel(std::string_view label)
 {
     std::string upper(label);

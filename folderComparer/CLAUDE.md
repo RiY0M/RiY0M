@@ -39,7 +39,10 @@ Application de bureau (C++20 + Qt 6 Widgets) pour comparer deux gros dossiers
 7. **Liste** : une ligne colorée par fichier différent ; **un dossier absent de l'autre côté est une seule ligne**
    (avec son contenu `D(n) F(n)`), dépliable avec la flèche (flèches natives Qt) en sous-lignes
    (dossiers d'abord, puis fichiers), récursivement ; l'encadré entier des sous-lignes est indenté.
-   Ordre dans une ligne : flèche, statut, icône dossier, nom, contenu du dossier, boutons.
+   Ordre dans une ligne : flèche, statut, icône dossier, nom, contenu du dossier (`D(n) F(n)`) ou extension
+   du fichier en majuscules (`JPG`, `extensionLabel`) — même texte gris gras 9 pt pour les deux —, boutons. Un nom trop long défile horizontalement dans
+   sa propre zone (`NameScroller`, fine barre de défilement) : l'extension et les boutons restent visibles et
+   alignés ; la molette verticale fait défiler la liste, Shift + molette ou un geste horizontal fait défiler le nom.
    **Couleurs** : Different ambre `#B88600`, Only A orange `#E07000`, Only B terre cuite `#A0522D`
    (dégradé chaud des différences) ; COPIED vert, DELETED rouge `#CC0000` (le rouge est réservé à la
    suppression), SKIPPED gris.
@@ -49,7 +52,11 @@ Application de bureau (C++20 + Qt 6 Widgets) pour comparer deux gros dossiers
    la présence est vérifiée sur le disque au moment du clic (`ComparisonSession::existingLocations`).
    Les boutons de ligne et de filtre ne prennent pas le focus ; après chaque action le focus va à la liste.
 8. **Actions par ligne** (fichier ou dossier entier) :
-   - Different : `B → A`, `A → B`, `Delete A`, `Delete B`, `Delete both`, `Skip` ;
+   - Different : `Copy ▾` (menu `A → B` / `B → A`), `Delete ▾` (menu `Delete A` / `Delete B` / `Delete both`),
+     `Skip` — les menus gardent la ligne compacte (`RowButton::choices`, la `command` d'un bouton-menu ne sert
+     qu’à sa couleur) ; le menu reprend les couleurs de son bouton et fait au moins sa largeur ;
+     chaque type de bouton (Copy, Delete, Skip, Undo) a une largeur fixe, identique sur toutes les lignes
+     (`MainWindow::rowButtonWidth`, calculée depuis les libellés de `buttonsFor`) ;
    - Only A : `Copy → B`, `Delete A`, `Skip` ; Only B : `Copy → A`, `Delete B`, `Skip`.
    `Skip` (« vu, rien à faire ») ne touche à aucun fichier : il marque seulement la ligne.
    Chaque bouton a la couleur de la ligne qu'il produit (`commandStyle`) : copie verte, suppression rouge,

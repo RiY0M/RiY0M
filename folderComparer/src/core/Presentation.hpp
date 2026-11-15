@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -147,6 +148,10 @@ enum class RowCommand : std::uint8_t {
 
 /// Progress of `current` out of `total`, in whole percents (0-100, 100 when total is 0).
 [[nodiscard]] int progressPercent(std::size_t current, std::size_t total) noexcept;
+
+/// Upper-cased extension without the dot, shown at the end of file rows:
+/// "photo.jpeg" → "JPEG", "a.tar.gz" → "GZ", "README" and ".gitignore" → "".
+[[nodiscard]] std::string extensionLabel(const std::filesystem::path& file);
 
 /// Upper-cased label, as displayed in a row ("ONLY A", "COPIED").
 [[nodiscard]] std::string upperLabel(std::string_view label);

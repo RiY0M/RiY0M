@@ -38,9 +38,24 @@ enum class EntryKind : std::uint8_t {
     Folder,
 };
 
+/// One entry of a menu button.
+struct RowChoice {
+    std::string label;
+    RowCommand command = RowCommand::Undo;
+
+    friend bool operator==(const RowChoice&, const RowChoice&) = default;
+};
+
+/// A row button: a plain button runs `command`; a menu button (non-empty
+/// `choices`) lets the user pick the precise command, and its `command` only
+/// tells the kind of commands it offers (and so its color).
 struct RowButton {
     std::string label;
     RowCommand command = RowCommand::Undo;
+    std::vector<RowChoice> choices;
+
+    /// Every command the button can run.
+    [[nodiscard]] std::vector<RowCommand> commands() const;
 
     friend bool operator==(const RowButton&, const RowButton&) = default;
 };
@@ -64,6 +79,7 @@ struct Row {
     bool inherited = false;
     std::string statusText; ///< "DIFFERENT", "ONLY A", "COPIED → B", "DELETED A"...
     std::string detail;     ///< folder content, "D(2) F(10)"
+    std::string extension;  ///< files: upper-case extension without the dot ("JPG"), may be empty
     Style style;
     std::vector<RowButton> buttons; ///< left to right
 

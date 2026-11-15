@@ -75,14 +75,26 @@ std::vector<std::string> describe(const std::vector<fc::Row>& rows)
     return texts;
 }
 
+/// Every command reachable from the row, menus included, in display order.
 std::vector<RowCommand> commands(const fc::Row& row)
 {
     std::vector<RowCommand> result;
-    result.reserve(row.buttons.size());
     for (const auto& button : row.buttons) {
-        result.push_back(button.command);
+        for (const RowCommand command : button.commands()) {
+            result.push_back(command);
+        }
     }
     return result;
+}
+
+std::vector<std::string> buttonLabels(const fc::Row& row)
+{
+    std::vector<std::string> labels;
+    labels.reserve(row.buttons.size());
+    for (const auto& button : row.buttons) {
+        labels.push_back(button.label);
+    }
+    return labels;
 }
 
 } // namespace
@@ -145,7 +157,7 @@ FC_TEST(session_rows_offer_copy_and_delete_buttons)
 {
     const SessionFixture fixture;
     FC_CHECK_EQ(commands(fixture.row("diff.txt")),
-                (std::vector<RowCommand>{RowCommand::CopyBToA, RowCommand::CopyAToB, RowCommand::DeleteA,
+                (std::vector<RowCommand>{RowCommand::CopyAToB, RowCommand::CopyBToA, RowCommand::DeleteA,
                                          RowCommand::DeleteB, RowCommand::DeleteBoth, RowCommand::Skip}));
     FC_CHECK_EQ(commands(fixture.row("only_a.txt")),
                 (std::vector<RowCommand>{RowCommand::CopyAToB, RowCommand::DeleteA, RowCommand::Skip}));
@@ -155,6 +167,39 @@ FC_TEST(session_rows_offer_copy_and_delete_buttons)
                 (std::vector<RowCommand>{RowCommand::CopyBToA, RowCommand::DeleteB, RowCommand::Skip}));
     FC_CHECK_EQ(fixture.row("only_a.txt").buttons.front().label, std::string("Copy → B"));
     FC_CHECK_EQ(fixture.row("diff.txt").buttons.back().label, std::string("Skip"));
+}
+
+FC_TEST(session_different_rows_group_copy_and_delete_in_menus)
+{
+    const SessionFixture fixture;
+    const fc::Row row = fixture.row("diff.txt");
+    FC_CHECK_EQ(buttonLabels(row), (std::vector<std::string>{"Copy", "Delete", "Skip"}));
+
+    const fc::RowButton& copy = row.buttons.at(0);
+    FC_CHECK_EQ(copy.choices, (std::vector<fc::RowChoice>{{"A \u2192 B", RowCommand::CopyAToB},
+                                                          {"B \u2192 A", RowCommand::CopyBToA}}));
+    FC_CHECK(fc::commandStyle(copy.command) == fc::actionStyle(fc::FileAction::Copy)); // green
+
+    const fc::RowButton& remove = row.buttons.at(1);
+    FC_CHECK_EQ(remove.choices, (std::vector<fc::RowChoice>{{"Delete A", RowCommand::DeleteA},
+                                                            {"Delete B", RowCommand::DeleteB},
+                                                            {"Delete both", RowCommand::DeleteBoth}}));
+    FC_CHECK(fc::commandStyle(remove.command) == fc::actionStyle(fc::FileAction::Delete)); // red
+
+    FC_CHECK(row.buttons.at(2).choices.empty()); // Skip: a plain button
+    // One-sided rows keep plain buttons.
+    for (const auto& button : fixture.row("only_a.txt").buttons) {
+        FC_CHECK(button.choices.empty());
+    }
+}
+
+FC_TEST(session_rows_show_the_file_extension)
+{
+    SessionFixture fixture;
+    FC_CHECK_EQ(fixture.row("diff.txt").extension, std::string("TXT"));
+    fixture.session.toggleExpanded(native("photos"));
+    FC_CHECK_EQ(fixture.row("photos/a.jpg").extension, std::string("JPG"));
+    FC_CHECK(fixture.row("photos").extension.empty()); // folders show their content instead
 }
 
 FC_TEST(session_copy_file_marks_row_and_undo_reverts)
@@ -172,7 +217,7 @@ FC_TEST(session_copy_file_marks_row_and_undo_reverts)
     fixture.session.apply("diff.txt", RowCommand::Undo);
     FC_CHECK_EQ(fc::test::readFile(fixture.b / "diff.txt"), std::string("version B!"));
     FC_CHECK_EQ(fixture.row("diff.txt").statusText, std::string("DIFFERENT"));
-    FC_CHECK_EQ(fixture.row("diff.txt").buttons.size(), std::size_t{6});
+    FC_CHECK_EQ(fixture.row("diff.txt").buttons.size(), std::size_t{3});
 }
 
 FC_TEST(session_delete_different_file_on_either_side_and_undo)

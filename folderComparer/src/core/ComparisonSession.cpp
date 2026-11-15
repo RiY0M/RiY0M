@@ -113,21 +113,38 @@ void ComparisonSession::reset()
     counts_ = CategoryCounts{};
 }
 
+std::vector<RowCommand> RowButton::commands() const
+{
+    if (choices.empty()) {
+        return {command};
+    }
+    std::vector<RowCommand> result;
+    result.reserve(choices.size());
+    for (const RowChoice& choice : choices) {
+        result.push_back(choice.command);
+    }
+    return result;
+}
+
 std::vector<RowButton> ComparisonSession::buttonsFor(FileStatus status)
 {
     const auto button = [](RowCommand command) {
-        return RowButton{std::string(commandLabel(command)), command};
+        return RowButton{std::string(commandLabel(command)), command, {}};
     };
+    const auto choice = [](RowCommand command) { return RowChoice{std::string(commandLabel(command)), command}; };
 
     switch (status) {
     case FileStatus::Different:
-        return {button(RowCommand::CopyBToA), button(RowCommand::CopyAToB), button(RowCommand::DeleteA),
-                button(RowCommand::DeleteB), button(RowCommand::DeleteBoth), button(RowCommand::Skip)};
+        // Menus keep the row compact: the precise copy / deletion is picked in them.
+        return {RowButton{"Copy", RowCommand::CopyAToB, {choice(RowCommand::CopyAToB), choice(RowCommand::CopyBToA)}},
+                RowButton{"Delete", RowCommand::DeleteA,
+                          {choice(RowCommand::DeleteA), choice(RowCommand::DeleteB), choice(RowCommand::DeleteBoth)}},
+                button(RowCommand::Skip)};
     case FileStatus::OnlyA:
-        return {RowButton{"Copy → B", RowCommand::CopyAToB}, button(RowCommand::DeleteA),
+        return {RowButton{"Copy → B", RowCommand::CopyAToB, {}}, button(RowCommand::DeleteA),
                 button(RowCommand::Skip)};
     case FileStatus::OnlyB:
-        return {RowButton{"Copy → A", RowCommand::CopyBToA}, button(RowCommand::DeleteB),
+        return {RowButton{"Copy → A", RowCommand::CopyBToA, {}}, button(RowCommand::DeleteB),
                 button(RowCommand::Skip)};
     case FileStatus::Identical:
         return {};
@@ -179,12 +196,15 @@ Row ComparisonSession::makeRow(const fs::path& path, const Entry& entry, std::si
         row.expanded = row.expandable && expanded_.contains(path);
         row.detail = formatFolderContent(folderContent_.at(path));
     }
+    else {
+        row.extension = extensionLabel(path);
+    }
 
     if (const auto own = actions_.find(path); own != actions_.end()) {
         row.action = own->second.command;
         row.style = commandStyle(own->second.command);
         row.statusText = actionStatusText(own->second.command);
-        row.buttons = {RowButton{std::string(commandLabel(RowCommand::Undo)), RowCommand::Undo}};
+        row.buttons = {RowButton{std::string(commandLabel(RowCommand::Undo)), RowCommand::Undo, {}}};
     }
     else if (const auto inherited = parentAction(path)) {
         row.action = inherited;
@@ -376,7 +396,10 @@ void ComparisonSession::applyAction(const fs::path& relativePath, RowCommand com
     }
 
     const std::vector<RowButton> allowed = buttonsFor(entry.status);
-    if (std::ranges::none_of(allowed, [command](const RowButton& button) { return button.command == command; })) {
+    if (std::ranges::none_of(allowed, [command](const RowButton& button) {
+            const std::vector<RowCommand> commands = button.commands();
+            return std::ranges::find(commands, command) != commands.end();
+        })) {
         throw std::logic_error("Command not available for " + toUtf8(relativePath));
     }
 

@@ -17,6 +17,7 @@
 
 class QCheckBox;
 class QCloseEvent;
+class QFont;
 class QGridLayout;
 class QHBoxLayout;
 class QLabel;
@@ -74,6 +75,8 @@ private:
     void buildFileList(QVBoxLayout* mainLayout);
     void populateFileList();
     QWidget* buildRow(const Row& row);
+    /// Fixed width of a row button, the same for every button of its kind.
+    [[nodiscard]] int rowButtonWidth(RowCommand command, const QFont& font);
 
     // Compare
     void compareFolders();
@@ -122,6 +125,7 @@ private:
     std::vector<QWidget*> progressAreaItems_;
     std::array<QPushButton*, kSummaryItems.size()> summaryButtons_{}; ///< checkable ones are the filters
     std::map<std::filesystem::path, RowWidget, PathLess> rowWidgets_;
+    std::array<int, 4> buttonWidths_{}; ///< Copy, Delete, Skip, Undo; computed on first use
 
     ComparisonSession session_;
     Filter currentFilter_ = kDefaultFilter;

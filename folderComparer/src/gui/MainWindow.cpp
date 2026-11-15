@@ -29,6 +29,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSizePolicy>
 #include <QString>
 #include <QStringList>
@@ -36,6 +37,7 @@
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <QWidget>
 
 #include <algorithm>
@@ -58,6 +60,29 @@ namespace {
 constexpr int kStatusColumnCharacters = 12;
 constexpr int kIndentPerDepth = 28;
 constexpr int kToggleWidth = 26;
+constexpr int kNameScrollBarHeight = 6;
+constexpr int kButtonPadding = 8;       // left / right text padding of the row buttons
+constexpr int kMenuIndicatorRoom = 14;  // extra room on the right of a menu button for its arrow
+
+/// Row buttons have one fixed width per kind (Copy, Delete, Skip, Undo), the
+/// same on every row, so that they line up in columns.
+std::size_t buttonSlot(RowCommand command)
+{
+    switch (command) {
+    case RowCommand::CopyAToB:
+    case RowCommand::CopyBToA:
+        return 0;
+    case RowCommand::DeleteA:
+    case RowCommand::DeleteB:
+    case RowCommand::DeleteBoth:
+        return 1;
+    case RowCommand::Skip:
+        return 2;
+    case RowCommand::Undo:
+        return 3;
+    }
+    return 3;
+}
 constexpr int kMaxListedErrors = 10;
 constexpr auto kProgressInterval = std::chrono::milliseconds(50);
 
@@ -143,6 +168,54 @@ private:
     }
 
     std::function<void()> onClick_;
+};
+
+/// Horizontal scroller for a long name: the name scrolls inside its own area,
+/// so the extension and the buttons of the row stay visible. A vertical wheel
+/// keeps scrolling the list; only Shift + wheel or a horizontal wheel / touchpad
+/// gesture scrolls the name.
+class NameScroller final : public QScrollArea {
+public:
+    explicit NameScroller(QWidget* content)
+    {
+        setWidget(content);
+        setWidgetResizable(false); // the name keeps its natural width
+        setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        setFrameShape(QFrame::NoFrame);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setFocusPolicy(Qt::NoFocus);
+        // Takes the space left in the row and never pushes the other widgets.
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        setFixedHeight(content->sizeHint().height() + kNameScrollBarHeight);
+
+        setStyleSheet(qs("QScrollArea { background: transparent; border: none; }"
+                         "QScrollBar:horizontal { height: %1px; background: transparent; margin: 0; }"
+                         "QScrollBar::handle:horizontal { background: #9E9E9E; border-radius: 3px; min-width: 24px; }"
+                         "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }"
+                         "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }")
+                          .arg(kNameScrollBarHeight));
+        viewport()->setAutoFillBackground(false);
+        content->setAutoFillBackground(false);
+    }
+
+protected:
+    void wheelEvent(QWheelEvent* event) override
+    {
+        const QPoint delta = event->angleDelta();
+        const bool shift = event->modifiers().testFlag(Qt::ShiftModifier);
+        int amount = delta.x(); // horizontal wheel / touchpad
+        if (amount == 0 && shift) {
+            amount = delta.y(); // Shift + vertical wheel
+        }
+        QScrollBar* bar = horizontalScrollBar();
+        if (amount == 0 || bar->maximum() == 0) {
+            event->ignore(); // the list scrolls
+            return;
+        }
+        bar->setValue(bar->value() - (amount / 2));
+        event->accept();
+    }
 };
 
 QString nativePath(const fs::path& path)
@@ -586,6 +659,28 @@ void MainWindow::populateFileList()
     fileContainer_->setUpdatesEnabled(true);
 }
 
+int MainWindow::rowButtonWidth(RowCommand command, const QFont& font)
+{
+    if (buttonWidths_.at(0) == 0) {
+        // Widest label of each kind among every button a row can show, plus the
+        // frame (padding, border, menu arrow) and a small margin.
+        const QFontMetrics metrics(font);
+        const auto widen = [this, &metrics](const RowButton& button) {
+            const int text = metrics.horizontalAdvance(qs(button.label));
+            const int frame = (2 * kButtonPadding) + 2 + (button.choices.empty() ? 0 : kMenuIndicatorRoom) + 6;
+            int& width = buttonWidths_.at(buttonSlot(button.command));
+            width = std::max(width, text + frame);
+        };
+        for (const FileStatus status : {FileStatus::Different, FileStatus::OnlyA, FileStatus::OnlyB}) {
+            for (const RowButton& button : ComparisonSession::buttonsFor(status)) {
+                widen(button);
+            }
+        }
+        widen(RowButton{std::string(commandLabel(RowCommand::Undo)), RowCommand::Undo, {}});
+    }
+    return buttonWidths_.at(buttonSlot(command));
+}
+
 QWidget* MainWindow::buildRow(const Row& row)
 {
     auto* frame = new QFrame;
@@ -634,31 +729,67 @@ QWidget* MainWindow::buildRow(const Row& row)
     nameLabel->setFont(appFont(10, row.kind == EntryKind::Folder));
     nameLabel->setStyleSheet(colorStyleSheet(row.style.color));
     nameLabel->setToolTip(qs("%1\nClick to open").arg(nativePath(row.path)));
-    nameLabel->setMinimumHeight(QFontMetrics(nameLabel->font()).height() + 14);
-    layout->addWidget(nameLabel);
-    layout->addStretch(1);
+    nameLabel->setMinimumHeight(QFontMetrics(nameLabel->font()).height() + 8);
+    layout->addWidget(new NameScroller(nameLabel), 1);
 
-    if (!row.detail.empty()) {
-        auto* detailLabel = new QLabel(qs(row.detail));
-        detailLabel->setFont(appFont(9));
-        detailLabel->setStyleSheet(colorStyleSheet(colors::kGrey));
-        layout->addWidget(detailLabel);
+    // Folder content ("D(2) F(10)") or file extension ("JPG"): the same plain grey text.
+    if (const std::string& info = row.detail.empty() ? row.extension : row.detail; !info.empty()) {
+        auto* infoLabel = new QLabel(qs(info));
+        infoLabel->setFont(appFont(9, true));
+        infoLabel->setStyleSheet(colorStyleSheet(colors::kGrey));
+        infoLabel->setAlignment(Qt::AlignCenter);
+        // A common minimum width keeps the short extensions aligned.
+        infoLabel->setMinimumWidth(QFontMetrics(infoLabel->font()).horizontalAdvance(qs("JPEG")));
+        layout->addWidget(infoLabel);
     }
 
     for (const RowButton& rowButton : row.buttons) {
         auto* button = new QPushButton(qs(rowButton.label));
         button->setFocusPolicy(Qt::NoFocus);
-        const RowCommand command = rowButton.command;
-        if (const Style style = commandStyle(command); !style.color.empty()) {
-            // Copy green, Delete red, Skip grey: the color of the row the action produces.
-            button->setStyleSheet(
-                qs("QPushButton { color: %1; background-color: %2; border: 1px solid %1; border-radius: 3px;"
-                   " padding: 3px 10px; }"
-                   "QPushButton:hover { background-color: #FFFFFF; }"
-                   "QPushButton:pressed { background-color: %1; color: #FFFFFF; }")
-                    .arg(qs(style.color), qs(style.background)));
+        const bool hasMenu = !rowButton.choices.empty();
+
+        // Copy green, Delete red, Skip grey: the color of the row the action produces;
+        // Undo neutral. Every button gets the same frame, hence the same height.
+        Style style = commandStyle(rowButton.command);
+        if (style.color.empty()) {
+            style = Style{{}, "#424242", "#FFFFFF"};
         }
-        connect(button, &QPushButton::clicked, this, [this, path, command] { runCommand(path, command); });
+        button->setStyleSheet(
+            qs("QPushButton { color: %1; background-color: %2; border: 1px solid %1; border-radius: 3px;"
+               " padding: 3px %3px 3px %4px; }"
+               "QPushButton:hover { background-color: #FFFFFF; }"
+               "QPushButton:pressed { background-color: %1; color: #FFFFFF; }"
+               "QPushButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right;"
+               " right: 4px; }")
+                .arg(qs(style.color), qs(style.background))
+                .arg(kButtonPadding + (hasMenu ? kMenuIndicatorRoom : 0))
+                .arg(kButtonPadding));
+        button->setFixedWidth(rowButtonWidth(rowButton.command, button->font()));
+
+        if (hasMenu) {
+            // Pick the precise command in a menu (e.g. A → B or B → A).
+            auto* menu = new QMenu(button);
+            menu->setFont(button->font());
+            // Same colors as its button: text and border in the action color, the
+            // highlighted entry filled like a pressed button.
+            menu->setStyleSheet(
+                qs("QMenu { color: %1; background-color: %2; border: 1px solid %1; padding: 2px 0; }"
+                   "QMenu::item { padding: 4px 10px; background-color: transparent; }"
+                   "QMenu::item:selected { background-color: %1; color: #FFFFFF; }")
+                    .arg(qs(style.color), qs(style.background)));
+            // At least as wide as its button (known only once the row is laid out).
+            connect(menu, &QMenu::aboutToShow, menu, [menu, button] { menu->setMinimumWidth(button->width()); });
+            for (const RowChoice& choice : rowButton.choices) {
+                QAction* item = menu->addAction(qs(choice.label));
+                const RowCommand command = choice.command;
+                connect(item, &QAction::triggered, this, [this, path, command] { runCommand(path, command); });
+            }
+            button->setMenu(menu);
+        }
+        else {
+            const RowCommand command = rowButton.command;
+            connect(button, &QPushButton::clicked, this, [this, path, command] { runCommand(path, command); });
+        }
         layout->addWidget(button);
     }
 
