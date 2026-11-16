@@ -4,7 +4,10 @@
 #include "core/Presentation.hpp"
 
 #include <cstdint>
+#include <filesystem>
+#include <algorithm>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -176,4 +179,69 @@ FC_TEST(extension_labels)
     FC_CHECK_EQ(fc::extensionLabel("README"), std::string(""));
     FC_CHECK_EQ(fc::extensionLabel(".gitignore"), std::string("")); // a hidden file, not an extension
     FC_CHECK_EQ(fc::extensionLabel("name."), std::string(""));
+}
+
+FC_TEST(type_groups_keep_text_apart_from_code)
+{
+    const auto groups = fc::typeGroups();
+    FC_REQUIRE(groups.size() >= std::size_t{8});
+    const auto find = [&groups](std::string_view name) -> const fc::TypeGroup& {
+        for (const fc::TypeGroup& group : groups) {
+            if (group.name == name) {
+                return group;
+            }
+        }
+        throw std::logic_error("missing group");
+    };
+    const auto contains = [](const fc::TypeGroup& group, std::string_view extension) {
+        return std::ranges::find(group.extensions, extension) != group.extensions.end();
+    };
+
+    for (const char* image : {"PNG", "JPG", "JPEG", "WEBP"}) {
+        FC_CHECK(contains(find("Images"), image));
+    }
+    FC_CHECK(contains(find("Videos"), "MP4"));
+    FC_CHECK(contains(find("Text"), "TXT"));
+    FC_CHECK(contains(find("Code"), "CPP"));
+    FC_CHECK(!contains(find("Text"), "CPP"));
+    FC_CHECK(!contains(find("Code"), "TXT"));
+
+    // Upper-case like extensionLabel, so they compare directly.
+    for (const fc::TypeGroup& group : groups) {
+        for (const std::string_view extension : group.extensions) {
+            FC_CHECK_EQ(fc::upperLabel(extension), std::string(extension));
+        }
+    }
+    // Wrapped 8 types per line, so that long groups give a readable tooltip.
+    const std::string code = fc::typeGroupDescription(find("Code"));
+    FC_CHECK(code.starts_with("Code:\nC, CC, CPP, CXX, H, HPP, HXX, CS\nJAVA"));
+    std::size_t longestLine = 0;
+    std::size_t lineStart = 0;
+    for (std::size_t index = 0; index <= code.size(); ++index) {
+        if (index == code.size() || code[index] == '\n') {
+            longestLine = std::max(longestLine, index - lineStart);
+            lineStart = index + 1;
+        }
+    }
+    FC_CHECK(longestLine < 60);
+    FC_CHECK(fc::typeGroupDescription(find("Images")).starts_with("Images:\nPNG, JPG, JPEG, WEBP"));
+}
+
+FC_TEST(case_insensitive_order)
+{
+    FC_CHECK(fc::caseInsensitiveLess("apple", "Banana"));
+    FC_CHECK(fc::caseInsensitiveLess("Banana", "cherry"));
+    FC_CHECK(!fc::caseInsensitiveLess("cherry", "Banana"));
+    FC_CHECK(fc::caseInsensitiveLess("abc", "ABCD")); // a prefix comes first
+    // u8 literals: a narrow literal would be decoded with the ANSI code page on Windows.
+    FC_CHECK(fc::caseInsensitiveLess(std::filesystem::path(u8"\u00C9t\u00E9"), std::filesystem::path(u8"\u00E9t\u00E9s")));
+    // Same letters: a stable, total order (exactly one way round).
+    FC_CHECK(fc::caseInsensitiveLess("A.txt", "a.txt") != fc::caseInsensitiveLess("a.txt", "A.txt"));
+    FC_CHECK(!fc::caseInsensitiveLess("same", "same"));
+}
+
+FC_TEST(type_labels)
+{
+    FC_CHECK_EQ(fc::typeLabel("JPG"), std::string("JPG"));
+    FC_CHECK_EQ(fc::typeLabel(""), std::string("(no extension)"));
 }

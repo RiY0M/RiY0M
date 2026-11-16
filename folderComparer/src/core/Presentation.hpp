@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -145,6 +146,29 @@ enum class RowCommand : std::uint8_t {
 [[nodiscard]] std::string actionStatusText(RowCommand command);
 /// "A → B", "Delete A", "Skip", "Undo"...
 [[nodiscard]] std::string_view commandLabel(RowCommand command) noexcept;
+
+/// Alphabetical order ignoring the case (ASCII and Latin-1 letters), ties broken
+/// by fc::pathLess so the order is total and stable.
+[[nodiscard]] bool caseInsensitiveLess(const std::filesystem::path& left, const std::filesystem::path& right);
+
+/// How a file type (an extensionLabel) is shown: "JPG", or "(no extension)".
+[[nodiscard]] std::string typeLabel(const std::string& extension);
+
+/// A family of file types offered as one choice in the type filter
+/// ("Images": PNG, JPG, JPEG, WEBP...). Extensions are upper-case extensionLabels.
+struct TypeGroup {
+    std::string_view name;
+    std::span<const std::string_view> extensions;
+};
+
+/// Images, Videos, Audio, Text, Documents, Spreadsheets, Presentations, Code,
+/// Archives, Fonts, Executables, 3D models: text files (TXT, MD, LOG...) are
+/// kept apart from source code.
+[[nodiscard]] std::span<const TypeGroup> typeGroups() noexcept;
+
+/// Tooltip of a group: its name, then its types, 8 per line:
+/// "Images:\nPNG, JPG, JPEG, WEBP, GIF, BMP, TIF, TIFF\nHEIC, ...".
+[[nodiscard]] std::string typeGroupDescription(const TypeGroup& group);
 
 /// Progress of `current` out of `total`, in whole percents (0-100, 100 when total is 0).
 [[nodiscard]] int progressPercent(std::size_t current, std::size_t total) noexcept;

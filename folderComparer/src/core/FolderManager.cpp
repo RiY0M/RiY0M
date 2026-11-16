@@ -94,15 +94,13 @@ std::optional<FolderValidationError> validateFolder(const fs::path& rawPath, fs:
 
 ComparisonResult compare(const fs::path& folderA, const fs::path& folderB,
                          const CompareOptions& options, const ProgressCallback& progress,
-                         const std::stop_token& stopToken)
+                         const ScanControl& control)
 {
     ComparisonResult result;
 
-    const FolderListing listingA = FileManager::listEntries(folderA, options.recursive);
-    if (stopToken.stop_requested()) {
-        throw OperationCancelled{};
-    }
-    const FolderListing listingB = FileManager::listEntries(folderB, options.recursive);
+    const FolderListing listingA = FileManager::listEntries(folderA, options.recursive, control);
+    control.checkpoint();
+    const FolderListing listingB = FileManager::listEntries(folderB, options.recursive, control);
 
     std::vector<fs::path> common;
     std::ranges::set_difference(listingA.files, listingB.files, std::back_inserter(result.onlyA), pathLess);
@@ -119,9 +117,7 @@ ComparisonResult compare(const fs::path& folderA, const fs::path& folderB,
 
     const std::size_t total = common.size();
     for (std::size_t index = 0; index < total; ++index) {
-        if (stopToken.stop_requested()) {
-            throw OperationCancelled{};
-        }
+        control.checkpoint();
 
         const fs::path& path = common[index];
         if (progress) {
@@ -130,7 +126,7 @@ ComparisonResult compare(const fs::path& folderA, const fs::path& folderB,
 
         try {
             if (FileManager::filesAreIdentical(folderA / path, folderB / path,
-                                               options.deepComparison, stopToken)) {
+                                               options.deepComparison, control)) {
                 result.identical.push_back(path);
             }
             else {

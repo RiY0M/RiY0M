@@ -30,6 +30,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QString>
 #include <QStringList>
@@ -38,12 +39,15 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QWidgetAction>
 #include <QWidget>
 
 #include <algorithm>
 #include <chrono>
 #include <climits>
 #include <exception>
+#include <optional>
+#include <set>
 #include <functional>
 #include <memory>
 #include <string>
@@ -63,6 +67,36 @@ constexpr int kToggleWidth = 26;
 constexpr int kNameScrollBarHeight = 6;
 constexpr int kButtonPadding = 8;       // left / right text padding of the row buttons
 constexpr int kMenuIndicatorRoom = 14;  // extra room on the right of a menu button for its arrow
+
+QString qs(std::string_view text);
+
+constexpr int kCheckBoxWidth = 22;
+constexpr std::string_view kProgressRunning = "#43A047"; // green
+constexpr std::string_view kProgressPaused = "#F9A825";  // yellow, like a paused Explorer copy
+
+QString progressBarStyle(std::string_view chunkColor);
+
+/// Colors of an action button (also used for the menu of a menu button).
+Style actionButtonColors(RowCommand command)
+{
+    const Style style = commandStyle(command);
+    return style.color.empty() ? Style{{}, "#424242", "#FFFFFF"} : style; // Undo: neutral
+}
+
+/// Copy green, Delete red, Skip grey (the color of the row the action produces), Undo neutral.
+QString actionButtonStyleSheet(RowCommand command, bool hasMenu)
+{
+    const Style style = actionButtonColors(command);
+    return qs("QPushButton { color: %1; background-color: %2; border: 1px solid %1; border-radius: 3px;"
+              " padding: 3px %3px 3px %4px; }"
+              "QPushButton:hover { background-color: #FFFFFF; }"
+              "QPushButton:pressed { background-color: %1; color: #FFFFFF; }"
+              "QPushButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right;"
+              " right: 4px; }")
+        .arg(qs(style.color), qs(style.background))
+        .arg(kButtonPadding + (hasMenu ? kMenuIndicatorRoom : 0))
+        .arg(kButtonPadding);
+}
 
 /// Row buttons have one fixed width per kind (Copy, Delete, Skip, Undo), the
 /// same on every row, so that they line up in columns.
@@ -217,6 +251,13 @@ protected:
         event->accept();
     }
 };
+
+QString progressBarStyle(std::string_view chunkColor)
+{
+    return qs("QProgressBar { border: 1px solid #BDBDBD; border-radius: 4px; background-color: #FAFAFA; }"
+              "QProgressBar::chunk { background-color: %1; border-radius: 3px; }")
+        .arg(qs(chunkColor));
+}
 
 QString nativePath(const fs::path& path)
 {
@@ -461,9 +502,7 @@ void MainWindow::buildProgressArea(QVBoxLayout* mainLayout)
     // to grow vertically (QProgressBar is fixed-height by default): it fills the
     // row, exactly as high as the buttons next to it.
     progress_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    progress_->setStyleSheet(
-        qs("QProgressBar { border: 1px solid #BDBDBD; border-radius: 4px; background-color: #FAFAFA; }"
-           "QProgressBar::chunk { background-color: #43A047; border-radius: 3px; }"));
+    progress_->setStyleSheet(progressBarStyle(kProgressRunning));
     layout->addWidget(progress_, 1);
 
     progressLabel_ = new QLabel(qs("Ready"));
@@ -478,6 +517,22 @@ void MainWindow::buildProgressArea(QVBoxLayout* mainLayout)
     percentLabel_->setMinimumWidth(QFontMetrics(percentLabel_->font()).horizontalAdvance(qs("100%")));
     percentLabel_->hide();
     layout->addWidget(percentLabel_);
+
+    // Pause / resume and stop, like the copy dialog of the Windows Explorer.
+    const auto scanButton = [layout](QStyle::StandardPixmap icon, const QString& tooltip) {
+        auto* button = new QToolButton;
+        button->setIcon(QApplication::style()->standardIcon(icon));
+        button->setToolTip(tooltip);
+        button->setAutoRaise(true);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setEnabled(false);
+        layout->addWidget(button);
+        return button;
+    };
+    pauseButton_ = scanButton(QStyle::SP_MediaPause, qs("Pause the comparison"));
+    stopButton_ = scanButton(QStyle::SP_MediaStop, qs("Stop the comparison"));
+    connect(pauseButton_, &QToolButton::clicked, this, [this] { togglePause(); });
+    connect(stopButton_, &QToolButton::clicked, this, [this] { stopComparison(); });
 
     updateUndoButton();
 }
@@ -594,6 +649,7 @@ void MainWindow::updateSummary()
 void MainWindow::setFilter(Filter filter)
 {
     currentFilter_ = filter;
+    session_.clearSelection(); // never act on rows that are not shown
     updateSummary();
     populateFileList();
     focusFileList();
@@ -614,6 +670,10 @@ void MainWindow::buildFileList(QVBoxLayout* mainLayout)
     scrollArea_->setWidgetResizable(true);
     scrollArea_->setFrameShape(QFrame::NoFrame);
     scrollArea_->setFocusPolicy(Qt::StrongFocus); // receives the focus after each action
+    // Always shown, so that the header below keeps the same columns as the rows.
+    scrollArea_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+
+    buildListHeader(frameLayout);
     frameLayout->addWidget(scrollArea_);
 
     fileContainer_ = new QWidget;
@@ -622,6 +682,300 @@ void MainWindow::buildFileList(QVBoxLayout* mainLayout)
     fileLayout_->setSpacing(4);
     fileLayout_->addStretch(1);
     scrollArea_->setWidget(fileContainer_);
+
+    updateSelectionBar();
+}
+
+void MainWindow::buildListHeader(QVBoxLayout* frameLayout)
+{
+    // Same columns as a row: check box | toggle | status | icon | Name ... | selection | mass actions.
+    // Margins: list container (2) + row border (1) + row layout (4 left, 5 right), plus the scroll bar.
+    auto* header = new QHBoxLayout;
+    header->setContentsMargins(2 + 1 + 4, 0, 2 + 1 + 5 + scrollArea_->verticalScrollBar()->sizeHint().width(), 2);
+    frameLayout->addLayout(header);
+
+    selectAllBox_ = new QCheckBox;
+    selectAllBox_->setTristate(true); // shows "some selected"
+    selectAllBox_->setFocusPolicy(Qt::NoFocus);
+    selectAllBox_->setFixedWidth(kCheckBoxWidth);
+    selectAllBox_->setToolTip(qs("Select every row shown"));
+    connect(selectAllBox_, &QCheckBox::clicked, this, [this] { selectAllClicked(); });
+    header->addWidget(selectAllBox_);
+
+    // Empty slots as wide as the toggle, status and icon columns of the rows.
+    const auto slot = [header](int width) {
+        auto* empty = new QWidget;
+        empty->setFixedWidth(width);
+        header->addWidget(empty);
+    };
+    slot(kToggleWidth);
+    slot(QFontMetrics(appFont(9, true)).averageCharWidth() * kStatusColumnCharacters);
+    auto* iconSlot = new QToolButton; // invisible twin of the rows' icon button, for its exact width
+    iconSlot->setIcon(QApplication::style()->standardIcon(QStyle::SP_DirOpenIcon));
+    iconSlot->setAutoRaise(true);
+    QSizePolicy keepSize = iconSlot->sizePolicy();
+    keepSize.setRetainSizeWhenHidden(true);
+    iconSlot->setSizePolicy(keepSize);
+    iconSlot->hide();
+    header->addWidget(iconSlot);
+
+    sortButton_ = new QToolButton;
+    sortButton_->setText(qs("Name"));
+    sortButton_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    sortButton_->setAutoRaise(true);
+    sortButton_->setFocusPolicy(Qt::NoFocus);
+    sortButton_->setFont(appFont(10, true));
+    connect(sortButton_, &QToolButton::clicked, this, [this] { toggleSortOrder(); });
+    header->addWidget(sortButton_);
+    header->addSpacing(10);
+
+    typesButton_ = new QToolButton;
+    typesButton_->setPopupMode(QToolButton::InstantPopup);
+    typesButton_->setAutoRaise(true);
+    typesButton_->setFocusPolicy(Qt::NoFocus);
+    typesButton_->setToolTip(qs("Show only some file types (folders holding none are hidden)"));
+    typesButton_->setStyleSheet(qs("QToolButton::menu-indicator { image: none; width: 0px; }"));
+    typesMenu_ = new QMenu(typesButton_);
+    connect(typesMenu_, &QMenu::aboutToShow, this, [this] { buildTypesMenu(); });
+    typesButton_->setMenu(typesMenu_);
+    header->addWidget(typesButton_);
+    header->addStretch(1);
+
+    // Right-aligned on the "D() F()" / extension column of the rows.
+    selectionLabel_ = new QLabel;
+    selectionLabel_->setFont(appFont(9, true));
+    selectionLabel_->setStyleSheet(colorStyleSheet(colors::kGrey));
+    selectionLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    selectionLabel_->setToolTip(qs("Selected: E = entries, D = folders, F = files.\n"
+                                   "A folder counts with its content; with a type filter, only the\n"
+                                   "matching files, which are the only ones its actions touch."));
+    header->addWidget(selectionLabel_);
+
+    // One fixed slot per button column of the rows (Copy, Delete, Skip / Undo),
+    // kept even when empty so that everything stays in its column.
+    constexpr std::array<RowCommand, 3> kinds{RowCommand::CopyAToB, RowCommand::DeleteA, RowCommand::Skip};
+    for (std::size_t column = 0; column < massSlots_.size(); ++column) {
+        auto* holder = new QWidget;
+        auto* holderLayout = new QHBoxLayout(holder);
+        holderLayout->setContentsMargins(0, 0, 0, 0);
+        holder->setFixedWidth(rowButtonWidth(kinds.at(column)));
+        header->addWidget(holder);
+        massSlots_.at(column) = holderLayout;
+    }
+
+    updateSortButton();
+    updateTypesButton();
+}
+
+void MainWindow::toggleSortOrder()
+{
+    session_.setSortOrder(session_.sortOrder() == SortOrder::Ascending ? SortOrder::Descending
+                                                                        : SortOrder::Ascending);
+    updateSortButton();
+    populateFileList();
+    focusFileList();
+}
+
+void MainWindow::updateSortButton()
+{
+    const bool ascending = session_.sortOrder() == SortOrder::Ascending;
+    sortButton_->setArrowType(ascending ? Qt::UpArrow : Qt::DownArrow);
+    sortButton_->setToolTip(ascending ? qs("Sorted by name, A to Z (click: Z to A)")
+                                      : qs("Sorted by name, Z to A (click: A to Z)"));
+}
+
+void MainWindow::buildTypesMenu()
+{
+    // Rebuilt each time it opens: the types depend on the comparison and on the
+    // view. Check boxes inside the menu let several choices be made without closing it.
+    typesMenu_->clear();
+    typeChecks_.clear();
+    groupChecks_.clear();
+    allTypesCheck_ = nullptr;
+
+    const std::map<std::string, std::size_t> types = session_.fileTypes(currentFilter_);
+
+    auto* panel = new QWidget;
+    auto* columns = new QHBoxLayout(panel);
+    columns->setContentsMargins(8, 6, 8, 6);
+    columns->setSpacing(20);
+
+    const auto newColumn = [](const QString& title) {
+        auto* column = new QVBoxLayout;
+        column->setSpacing(2);
+        auto* heading = new QLabel(title);
+        heading->setFont(appFont(9, true));
+        heading->setStyleSheet(colorStyleSheet(colors::kGrey));
+        column->addWidget(heading);
+        return column;
+    };
+    const auto newCheck = [](QVBoxLayout* column, const QString& text) {
+        auto* check = new QCheckBox(text);
+        check->setFocusPolicy(Qt::NoFocus);
+        column->addWidget(check);
+        return check;
+    };
+
+    // First column: every type found in the view. Its heading stays outside the
+    // scrolling list (sticky), level with the "Groups" heading.
+    auto* typeOuter = newColumn(qs("Types"));
+    auto* typeColumn = new QVBoxLayout;
+    typeColumn->setSpacing(2);
+    typeColumn->setContentsMargins(0, 0, 0, 0);
+    allTypesCheck_ = newCheck(typeColumn, qs("All types"));
+    connect(allTypesCheck_, &QCheckBox::clicked, this, [this](bool checked) {
+        applyTypeFilter(checked ? std::nullopt : std::optional<std::set<std::string>>{std::set<std::string>{}});
+    });
+    for (const auto& [type, count] : types) {
+        QCheckBox* check = newCheck(typeColumn, qs("%1 (%2)").arg(qs(typeLabel(type))).arg(count));
+        const std::string extension = type;
+        connect(check, &QCheckBox::clicked, this, [this, extension](bool checked) {
+            std::set<std::string> selected = selectedTypes();
+            if (checked) {
+                selected.insert(extension);
+            }
+            else {
+                selected.erase(extension);
+            }
+            applyTypeSelection(std::move(selected));
+        });
+        typeChecks_.emplace_back(extension, check);
+    }
+    typeColumn->addStretch(1);
+
+    // Many types: the first column scrolls.
+    auto* typeWidget = new QWidget;
+    typeWidget->setLayout(typeColumn);
+    auto* typeScroll = new QScrollArea;
+    typeScroll->setWidget(typeWidget);
+    typeScroll->setWidgetResizable(true);
+    typeScroll->setFrameShape(QFrame::NoFrame);
+    typeScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    constexpr int kMaxColumnHeight = 380;
+    typeScroll->setMinimumHeight(std::min(typeWidget->sizeHint().height(), kMaxColumnHeight));
+    typeScroll->setMinimumWidth(typeWidget->sizeHint().width() + typeScroll->verticalScrollBar()->sizeHint().width());
+    typeOuter->addWidget(typeScroll);
+    columns->addLayout(typeOuter);
+
+    // Second column: groups of types (Images, Videos, Code...).
+    auto* groupColumn = newColumn(qs("Groups"));
+    for (const TypeGroup& group : typeGroups()) {
+        std::vector<std::string> found; // the group's types present in the view
+        std::size_t files = 0;
+        for (const std::string_view extension : group.extensions) {
+            if (const auto type = types.find(std::string(extension)); type != types.end()) {
+                found.push_back(type->first);
+                files += type->second;
+            }
+        }
+        QCheckBox* check = newCheck(groupColumn, found.empty() ? qs(group.name)
+                                                               : qs("%1 (%2)").arg(qs(group.name)).arg(files));
+        check->setTristate(true); // some of its types selected
+        check->setToolTip(qs(typeGroupDescription(group)) +
+                          (found.empty() ? qs("\nNone of these types in this view.") : QString()));
+        check->setEnabled(!found.empty());
+        connect(check, &QCheckBox::clicked, this, [this, found] {
+            std::set<std::string> selected = selectedTypes();
+            const bool whole = std::ranges::all_of(found, [&selected](const std::string& type) {
+                return selected.contains(type);
+            });
+            for (const std::string& type : found) {
+                if (whole) {
+                    selected.erase(type);
+                }
+                else {
+                    selected.insert(type);
+                }
+            }
+            applyTypeSelection(std::move(selected));
+        });
+        groupChecks_.emplace_back(std::move(found), check);
+    }
+    groupColumn->addStretch(1);
+    columns->addLayout(groupColumn);
+    columns->setAlignment(typeOuter, Qt::AlignTop);
+    columns->setAlignment(groupColumn, Qt::AlignTop);
+
+    auto* action = new QWidgetAction(typesMenu_);
+    action->setDefaultWidget(panel);
+    typesMenu_->addAction(action);
+    updateTypeChecks();
+}
+
+std::set<std::string> MainWindow::selectedTypes() const
+{
+    if (const auto& filter = session_.typeFilter()) {
+        return *filter;
+    }
+    std::set<std::string> all; // "every type" made explicit
+    for (const auto& [type, files] : session_.fileTypes(currentFilter_)) {
+        all.insert(type);
+    }
+    return all;
+}
+
+void MainWindow::applyTypeSelection(std::set<std::string> types)
+{
+    // Every type of the view selected: back to "All types".
+    const auto inView = session_.fileTypes(currentFilter_);
+    const bool all = std::ranges::all_of(inView, [&types](const auto& type) { return types.contains(type.first); });
+    applyTypeFilter(all ? std::nullopt : std::optional<std::set<std::string>>{std::move(types)});
+}
+
+void MainWindow::updateTypeChecks()
+{
+    // Without signals: these updates must not run the handlers again.
+    const auto& filter = session_.typeFilter();
+    if (allTypesCheck_ != nullptr) {
+        const QSignalBlocker blocker(allTypesCheck_);
+        allTypesCheck_->setChecked(!filter.has_value());
+    }
+    for (const auto& [extension, check] : typeChecks_) {
+        const QSignalBlocker blocker(check);
+        check->setChecked(!filter || filter->contains(extension));
+    }
+    for (const auto& [found, check] : groupChecks_) {
+        const QSignalBlocker blocker(check);
+        const auto selected = static_cast<std::size_t>(std::ranges::count_if(
+            found, [&filter](const std::string& type) { return !filter || filter->contains(type); }));
+        if (selected == 0) {
+            check->setCheckState(Qt::Unchecked);
+        }
+        else {
+            check->setCheckState(selected == found.size() ? Qt::Checked : Qt::PartiallyChecked);
+        }
+    }
+}
+
+void MainWindow::applyTypeFilter(std::optional<std::set<std::string>> types)
+{
+    session_.setTypeFilter(std::move(types));
+    updateTypeChecks();
+    updateTypesButton();
+    populateFileList();
+}
+
+void MainWindow::updateTypesButton()
+{
+    const auto& filter = session_.typeFilter();
+    QString text;
+    if (!filter) {
+        text = qs("All types");
+    }
+    else if (filter->empty()) {
+        text = qs("None");
+    }
+    else if (filter->size() <= 3) {
+        QStringList names;
+        for (const std::string& type : *filter) {
+            names.append(qs(typeLabel(type)));
+        }
+        text = names.join(qs(", "));
+    }
+    else {
+        text = qs("%1 types").arg(filter->size());
+    }
+    typesButton_->setText(qs("Types: %1").arg(text));
 }
 
 void MainWindow::populateFileList()
@@ -657,14 +1011,56 @@ void MainWindow::populateFileList()
         stale.widget->deleteLater(); // may be the row whose button is being clicked
     }
     fileContainer_->setUpdatesEnabled(true);
+    updateSelectionBar();
 }
 
-int MainWindow::rowButtonWidth(RowCommand command, const QFont& font)
+QPushButton* MainWindow::makeActionButton(const RowButton& rowButton, const std::function<void(RowCommand)>& run)
+{
+    auto* button = new QPushButton(qs(rowButton.label));
+    button->setFocusPolicy(Qt::NoFocus);
+    const bool hasMenu = !rowButton.choices.empty();
+
+    // Copy green, Delete red, Skip grey: the color of the row the action produces;
+    // Undo neutral. Every button gets the same frame (same height) and the fixed
+    // width of its kind (the columns line up).
+    const Style style = actionButtonColors(rowButton.command);
+    button->setStyleSheet(actionButtonStyleSheet(rowButton.command, hasMenu));
+    button->setFixedWidth(rowButtonWidth(rowButton.command));
+
+    if (hasMenu) {
+        // Pick the precise command in a menu (e.g. A → B or B → A).
+        auto* menu = new QMenu(button);
+        menu->setFont(button->font());
+        // Same colors as its button: text and border in the action color, the
+        // highlighted entry filled like a pressed button.
+        menu->setStyleSheet(qs("QMenu { color: %1; background-color: %2; border: 1px solid %1; padding: 2px 0; }"
+                               "QMenu::item { padding: 4px 10px; background-color: transparent; }"
+                               "QMenu::item:selected { background-color: %1; color: #FFFFFF; }")
+                                .arg(qs(style.color), qs(style.background)));
+        // At least as wide as its button (known only once the row is laid out).
+        connect(menu, &QMenu::aboutToShow, menu, [menu, button] { menu->setMinimumWidth(button->width()); });
+        for (const RowChoice& choice : rowButton.choices) {
+            QAction* item = menu->addAction(qs(choice.label));
+            const RowCommand command = choice.command;
+            connect(item, &QAction::triggered, this, [run, command] { run(command); });
+        }
+        button->setMenu(menu);
+    }
+    else {
+        const RowCommand command = rowButton.command;
+        connect(button, &QPushButton::clicked, this, [run, command] { run(command); });
+    }
+    return button;
+}
+
+int MainWindow::rowButtonWidth(RowCommand command)
 {
     if (buttonWidths_.at(0) == 0) {
         // Widest label of each kind among every button a row can show, plus the
-        // frame (padding, border, menu arrow) and a small margin.
-        const QFontMetrics metrics(font);
+        // frame (padding, border, menu arrow) and a small margin, in the font
+        // of the buttons.
+        const QPushButton probe;
+        const QFontMetrics metrics(probe.font());
         const auto widen = [this, &metrics](const RowButton& button) {
             const int text = metrics.horizontalAdvance(qs(button.label));
             const int frame = (2 * kButtonPadding) + 2 + (button.choices.empty() ? 0 : kMenuIndicatorRoom) + 6;
@@ -677,6 +1073,10 @@ int MainWindow::rowButtonWidth(RowCommand command, const QFont& font)
             }
         }
         widen(RowButton{std::string(commandLabel(RowCommand::Undo)), RowCommand::Undo, {}});
+        // Skip and Undo use the same (last) column.
+        const int last = std::max(buttonWidths_.at(2), buttonWidths_.at(3));
+        buttonWidths_.at(2) = last;
+        buttonWidths_.at(3) = last;
     }
     return buttonWidths_.at(buttonSlot(command));
 }
@@ -692,6 +1092,22 @@ QWidget* MainWindow::buildRow(const Row& row)
     layout->setContentsMargins(4, 4, 5, 4);
 
     const fs::path path = row.path;
+
+    // Check box for mass actions (an empty slot keeps the rows aligned).
+    if (row.selectable) {
+        auto* check = new QCheckBox;
+        check->setChecked(row.selected);
+        check->setFocusPolicy(Qt::NoFocus);
+        check->setFixedWidth(kCheckBoxWidth);
+        check->setToolTip(qs("Select for a mass action"));
+        connect(check, &QCheckBox::toggled, this, [this, path](bool checked) { selectRow(path, checked); });
+        layout->addWidget(check);
+    }
+    else {
+        auto* slot = new QWidget;
+        slot->setFixedWidth(kCheckBoxWidth);
+        layout->addWidget(slot);
+    }
 
     if (row.expandable) {
         auto* toggle = new QToolButton;
@@ -743,54 +1159,20 @@ QWidget* MainWindow::buildRow(const Row& row)
         layout->addWidget(infoLabel);
     }
 
+    // Three fixed columns (Copy, Delete, Skip / Undo), kept even when empty: the
+    // extension / "D() F()" stays aligned with the other rows and the header.
+    std::array<QHBoxLayout*, 3> slots{};
+    constexpr std::array<RowCommand, 3> kinds{RowCommand::CopyAToB, RowCommand::DeleteA, RowCommand::Skip};
+    for (std::size_t column = 0; column < slots.size(); ++column) {
+        auto* holder = new QWidget;
+        slots.at(column) = new QHBoxLayout(holder);
+        slots.at(column)->setContentsMargins(0, 0, 0, 0);
+        holder->setFixedWidth(rowButtonWidth(kinds.at(column)));
+        layout->addWidget(holder);
+    }
     for (const RowButton& rowButton : row.buttons) {
-        auto* button = new QPushButton(qs(rowButton.label));
-        button->setFocusPolicy(Qt::NoFocus);
-        const bool hasMenu = !rowButton.choices.empty();
-
-        // Copy green, Delete red, Skip grey: the color of the row the action produces;
-        // Undo neutral. Every button gets the same frame, hence the same height.
-        Style style = commandStyle(rowButton.command);
-        if (style.color.empty()) {
-            style = Style{{}, "#424242", "#FFFFFF"};
-        }
-        button->setStyleSheet(
-            qs("QPushButton { color: %1; background-color: %2; border: 1px solid %1; border-radius: 3px;"
-               " padding: 3px %3px 3px %4px; }"
-               "QPushButton:hover { background-color: #FFFFFF; }"
-               "QPushButton:pressed { background-color: %1; color: #FFFFFF; }"
-               "QPushButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right;"
-               " right: 4px; }")
-                .arg(qs(style.color), qs(style.background))
-                .arg(kButtonPadding + (hasMenu ? kMenuIndicatorRoom : 0))
-                .arg(kButtonPadding));
-        button->setFixedWidth(rowButtonWidth(rowButton.command, button->font()));
-
-        if (hasMenu) {
-            // Pick the precise command in a menu (e.g. A → B or B → A).
-            auto* menu = new QMenu(button);
-            menu->setFont(button->font());
-            // Same colors as its button: text and border in the action color, the
-            // highlighted entry filled like a pressed button.
-            menu->setStyleSheet(
-                qs("QMenu { color: %1; background-color: %2; border: 1px solid %1; padding: 2px 0; }"
-                   "QMenu::item { padding: 4px 10px; background-color: transparent; }"
-                   "QMenu::item:selected { background-color: %1; color: #FFFFFF; }")
-                    .arg(qs(style.color), qs(style.background)));
-            // At least as wide as its button (known only once the row is laid out).
-            connect(menu, &QMenu::aboutToShow, menu, [menu, button] { menu->setMinimumWidth(button->width()); });
-            for (const RowChoice& choice : rowButton.choices) {
-                QAction* item = menu->addAction(qs(choice.label));
-                const RowCommand command = choice.command;
-                connect(item, &QAction::triggered, this, [this, path, command] { runCommand(path, command); });
-            }
-            button->setMenu(menu);
-        }
-        else {
-            const RowCommand command = rowButton.command;
-            connect(button, &QPushButton::clicked, this, [this, path, command] { runCommand(path, command); });
-        }
-        layout->addWidget(button);
+        slots.at(std::min(buttonSlot(rowButton.command), std::size_t{2}))
+            ->addWidget(makeActionButton(rowButton, [this, path](RowCommand command) { runCommand(path, command); }));
     }
 
     if (row.depth == 0) {
@@ -864,12 +1246,15 @@ void MainWindow::compareFolders()
 
         try {
             auto result = std::make_shared<ComparisonResult>(
-                FolderManager::compare(folders.folderA, folders.folderB, options, onProgress, stopToken));
+                FolderManager::compare(folders.folderA, folders.folderB, options, onProgress,
+                                       ScanControl{stopToken, &pauseControl_}));
             QMetaObject::invokeMethod(
                 this, [this, folders, result] { scanComplete(folders, std::move(*result)); },
                 Qt::QueuedConnection);
         }
-        catch (const OperationCancelled&) { // NOLINT(bugprone-empty-catch): the window is closing
+        catch (const OperationCancelled&) {
+            // Stop button (if the window is closing, the posted call is dropped with it).
+            QMetaObject::invokeMethod(this, [this] { scanStopped(); }, Qt::QueuedConnection);
         }
         catch (const std::exception& error) {
             const QString message = QString::fromLocal8Bit(error.what());
@@ -881,6 +1266,10 @@ void MainWindow::compareFolders()
 void MainWindow::isScanning()
 {
     scanning_ = true;
+    pauseControl_.resume();
+    updatePauseUi();
+    pauseButton_->setEnabled(true);
+    stopButton_->setEnabled(true);
     updateFolderArea(false);
     updateProgressArea(false);
     updateUndoButton();
@@ -914,6 +1303,8 @@ void MainWindow::scanComplete(const ValidatedFolders& folders, ComparisonResult 
     session_.setResult(folders.folderA, folders.folderB, std::move(result));
 
     scanning_ = false;
+    endScanControls();
+    updateTypesButton(); // a new comparison shows every type again
     updateSummary();
     populateFileList();
     progress_->setMaximum(1);
@@ -943,9 +1334,65 @@ void MainWindow::scanComplete(const ValidatedFolders& folders, ComparisonResult 
     }
 }
 
+void MainWindow::endScanControls()
+{
+    pauseControl_.resume();
+    updatePauseUi();
+    pauseButton_->setEnabled(false);
+    stopButton_->setEnabled(false);
+}
+
+void MainWindow::togglePause()
+{
+    if (!scanning_) {
+        return;
+    }
+    if (pauseControl_.isPaused()) {
+        pauseControl_.resume();
+    }
+    else {
+        pauseControl_.pause();
+    }
+    updatePauseUi();
+}
+
+void MainWindow::updatePauseUi()
+{
+    const bool paused = pauseControl_.isPaused();
+    pauseButton_->setIcon(QApplication::style()->standardIcon(paused ? QStyle::SP_MediaPlay : QStyle::SP_MediaPause));
+    pauseButton_->setToolTip(paused ? qs("Resume the comparison") : qs("Pause the comparison"));
+    progress_->setStyleSheet(progressBarStyle(paused ? kProgressPaused : kProgressRunning));
+    if (scanning_ && fraction_->isHidden()) {
+        progressLabel_->setText(paused ? qs("Paused") : qs("Scanning...")); // still listing the folders
+    }
+}
+
+void MainWindow::stopComparison()
+{
+    worker_.request_stop(); // also wakes a paused scan
+    pauseButton_->setEnabled(false);
+    stopButton_->setEnabled(false);
+}
+
+void MainWindow::scanStopped()
+{
+    scanning_ = false;
+    endScanControls();
+    progress_->setRange(0, 1);
+    progress_->setValue(0);
+    progressLabel_->setText(qs("Comparison stopped"));
+    progressLabel_->show();
+    fraction_->hide();
+    percentLabel_->hide();
+    updateFolderArea(true);
+    updateProgressArea(true);
+    updateUndoButton();
+}
+
 void MainWindow::scanFailed(const QString& message)
 {
     scanning_ = false;
+    endScanControls();
     progressLabel_->setText(qs("Comparison failed"));
     progressLabel_->show();
     fraction_->hide();
@@ -1020,6 +1467,97 @@ void MainWindow::redoLast()
     updateSummary();
     updateUndoButton();
     focusFileList();
+}
+
+// =========================================================
+// Selection / mass actions
+// =========================================================
+
+void MainWindow::selectRow(const fs::path& relativePath, bool selected)
+{
+    try {
+        session_.setSelected(relativePath, selected);
+    }
+    catch (const std::exception& error) {
+        QMessageBox::critical(this, qs("Error"), QString::fromLocal8Bit(error.what()));
+    }
+    populateFileList(); // the row and the selection bar follow
+}
+
+void MainWindow::selectAllClicked()
+{
+    if (session_.hasResult()) {
+        const bool select = session_.selectionState(currentFilter_) != SelectionState::All;
+        session_.setAllSelected(currentFilter_, select);
+    }
+    populateFileList();
+    focusFileList();
+}
+
+void MainWindow::updateSelectionBar()
+{
+    const SelectionState state =
+        session_.hasResult() ? session_.selectionState(currentFilter_) : SelectionState::None;
+    switch (state) {
+    case SelectionState::None:
+        selectAllBox_->setCheckState(Qt::Unchecked);
+        break;
+    case SelectionState::Some:
+        selectAllBox_->setCheckState(Qt::PartiallyChecked);
+        break;
+    case SelectionState::All:
+        selectAllBox_->setCheckState(Qt::Checked);
+        break;
+    }
+    selectAllBox_->setEnabled(session_.hasResult());
+
+    selectionLabel_->setText(session_.hasResult() ? qs(formatCounts(session_.selectionCounts())) : QString());
+
+    // The actions offered by every selected row, each in the column of its kind.
+    for (QHBoxLayout* slot : massSlots_) {
+        while (slot->count() > 0) {
+            QLayoutItem* item = slot->takeAt(slot->count() - 1);
+            if (QWidget* widget = item->widget()) {
+                widget->hide();
+                widget->deleteLater(); // may be the button being clicked
+            }
+            delete item;
+        }
+    }
+    for (const RowButton& button : ComparisonSession::massButtons(session_.commonCommands())) {
+        massSlots_.at(std::min(buttonSlot(button.command), std::size_t{2}))
+            ->addWidget(makeActionButton(button, [this](RowCommand command) { runMassCommand(command); }));
+    }
+}
+
+void MainWindow::runMassCommand(RowCommand command)
+{
+    std::vector<ActionFailure> failures;
+    try {
+        const WaitCursor waitCursor;
+        failures = session_.applyToSelection(command);
+    }
+    catch (const std::exception& error) {
+        QMessageBox::critical(this, commandErrorTitle(command), QString::fromLocal8Bit(error.what()));
+    }
+    populateFileList();
+    updateSummary();
+    updateUndoButton();
+    focusFileList();
+
+    if (!failures.empty()) {
+        QString details;
+        const auto listed = std::min(failures.size(), static_cast<std::size_t>(kMaxListedErrors));
+        for (std::size_t index = 0; index < listed; ++index) {
+            details += qs("\n\n%1\n%2").arg(nativePath(failures.at(index).path),
+                                             QString::fromLocal8Bit(failures.at(index).message.c_str()));
+        }
+        if (failures.size() > listed) {
+            details += qs("\n\n... and %1 more.").arg(failures.size() - listed);
+        }
+        QMessageBox::warning(this, commandErrorTitle(command),
+                             qs("%1 row(s) could not be processed; the others were.").arg(failures.size()) + details);
+    }
 }
 
 void MainWindow::focusFileList()

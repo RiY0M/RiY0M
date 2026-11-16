@@ -1,11 +1,11 @@
 #pragma once
 
 #include "core/ComparisonResult.hpp"
+#include "core/ScanControl.hpp"
 
 #include <cstddef>
 #include <filesystem>
 #include <functional>
-#include <stop_token>
 #include <string>
 #include <variant>
 
@@ -40,7 +40,7 @@ using FolderValidation = std::variant<ValidatedFolders, FolderValidationError>;
 
 namespace FolderManager {
 
-/// Compare two folders. Throws OperationCancelled when `stopToken` is
+/// Compare two folders, waiting while `control` is paused. Throws OperationCancelled when its stop token is
 /// triggered and std::filesystem::filesystem_error when a folder cannot be
 /// listed. Files that cannot be read are reported as different and listed in
 /// ComparisonResult::errors.
@@ -48,7 +48,7 @@ namespace FolderManager {
                                        const std::filesystem::path& folderB,
                                        const CompareOptions& options,
                                        const ProgressCallback& progress = {},
-                                       const std::stop_token& stopToken = {});
+                                       const ScanControl& control = {});
 
 /// Absolute, lexically normalized path without trailing separator and with
 /// native separators (Python: normcase(normpath(abspath(path))), minus the

@@ -1,5 +1,7 @@
 #include "core/Presentation.hpp"
 
+#include "core/FileManager.hpp"
+
 #include <algorithm>
 #include <limits>
 
@@ -207,6 +209,105 @@ std::string_view commandLabel(RowCommand command) noexcept
         return "Undo";
     }
     return {};
+}
+
+namespace {
+
+char32_t foldCase(char32_t character) noexcept
+{
+    const bool asciiUpper = character >= U'A' && character <= U'Z';
+    const bool latin1Upper = character >= U'\u00C0' && character <= U'\u00DE' && character != U'\u00D7';
+    return (asciiUpper || latin1Upper) ? character + (U'a' - U'A') : character;
+}
+
+} // namespace
+
+bool caseInsensitiveLess(const std::filesystem::path& left, const std::filesystem::path& right)
+{
+    const std::u32string leftText = left.u32string();
+    const std::u32string rightText = right.u32string();
+    const auto difference = std::ranges::mismatch(leftText, rightText, [](char32_t a, char32_t b) {
+        return foldCase(a) == foldCase(b);
+    });
+    if (difference.in1 != leftText.end() && difference.in2 != rightText.end()) {
+        return foldCase(*difference.in1) < foldCase(*difference.in2);
+    }
+    if (leftText.size() != rightText.size()) {
+        return leftText.size() < rightText.size(); // a prefix comes first
+    }
+    return pathLess(left, right); // same letters, different case
+}
+
+std::string typeLabel(const std::string& extension)
+{
+    return extension.empty() ? std::string("(no extension)") : extension;
+}
+
+namespace {
+
+using namespace std::string_view_literals;
+
+constexpr std::array kImages{"PNG"sv, "JPG"sv,  "JPEG"sv, "WEBP"sv, "GIF"sv, "BMP"sv, "TIF"sv, "TIFF"sv,
+                             "HEIC"sv, "HEIF"sv, "AVIF"sv, "SVG"sv,  "ICO"sv, "PSD"sv, "RAW"sv, "CR2"sv,
+                             "NEF"sv, "ARW"sv,  "DNG"sv};
+constexpr std::array kVideos{"MP4"sv, "MKV"sv, "AVI"sv, "MOV"sv, "WMV"sv, "WEBM"sv, "FLV"sv,
+                             "M4V"sv, "MPG"sv, "MPEG"sv, "3GP"sv, "M2TS"sv, "VOB"sv};
+constexpr std::array kAudio{"MP3"sv, "WAV"sv, "FLAC"sv, "AAC"sv, "OGG"sv, "M4A"sv,
+                            "WMA"sv, "OPUS"sv, "AIFF"sv, "ALAC"sv, "MID"sv, "MIDI"sv};
+constexpr std::array kText{"TXT"sv, "MD"sv, "RTF"sv, "LOG"sv, "NFO"sv, "TEX"sv, "RST"sv, "ADOC"sv};
+constexpr std::array kDocuments{"PDF"sv, "DOC"sv, "DOCX"sv, "ODT"sv, "EPUB"sv, "MOBI"sv, "PAGES"sv, "XPS"sv};
+constexpr std::array kSpreadsheets{"XLS"sv, "XLSX"sv, "XLSM"sv, "ODS"sv, "CSV"sv, "TSV"sv, "NUMBERS"sv};
+constexpr std::array kPresentations{"PPT"sv, "PPTX"sv, "ODP"sv, "KEY"sv};
+constexpr std::array kCode{"C"sv,    "CC"sv,   "CPP"sv,  "CXX"sv,  "H"sv,    "HPP"sv,   "HXX"sv,  "CS"sv,
+                           "JAVA"sv, "KT"sv,   "PY"sv,   "JS"sv,   "MJS"sv,  "TS"sv, "TSX"sv,   "JSX"sv,  "GO"sv,
+                           "RS"sv,   "RB"sv,   "PHP"sv,  "SWIFT"sv, "LUA"sv, "PL"sv,    "SH"sv,   "BAT"sv,
+                           "CMD"sv,  "PS1"sv,  "SQL"sv,  "HTML"sv, "HTM"sv,  "CSS"sv,   "SCSS"sv, "JSON"sv,
+                           "XML"sv,  "YAML"sv, "YML"sv,  "TOML"sv, "INI"sv,  "CMAKE"sv, "GRADLE"sv, "VUE"sv,
+                           "DART"sv, "R"sv,    "M"sv,    "ASM"sv};
+constexpr std::array kArchives{"ZIP"sv, "RAR"sv, "7Z"sv,  "TAR"sv, "GZ"sv,  "TGZ"sv,
+                               "BZ2"sv, "XZ"sv,  "ZST"sv, "ISO"sv, "CAB"sv, "LZ"sv};
+constexpr std::array kFonts{"TTF"sv, "OTF"sv, "WOFF"sv, "WOFF2"sv, "EOT"sv, "FON"sv};
+constexpr std::array kExecutables{"EXE"sv, "DLL"sv, "MSI"sv, "SYS"sv, "SO"sv,
+                                  "DYLIB"sv, "APP"sv, "APK"sv, "DMG"sv, "DEB"sv, "RPM"sv};
+constexpr std::array k3dModels{"OBJ"sv, "FBX"sv, "STL"sv, "GLTF"sv, "GLB"sv, "BLEND"sv, "3DS"sv, "DAE"sv, "PLY"sv};
+
+constexpr std::array kTypeGroups{
+    TypeGroup{"Images", kImages},
+    TypeGroup{"Videos", kVideos},
+    TypeGroup{"Audio", kAudio},
+    TypeGroup{"Text", kText},
+    TypeGroup{"Documents", kDocuments},
+    TypeGroup{"Spreadsheets", kSpreadsheets},
+    TypeGroup{"Presentations", kPresentations},
+    TypeGroup{"Code", kCode},
+    TypeGroup{"Archives", kArchives},
+    TypeGroup{"Fonts", kFonts},
+    TypeGroup{"Executables", kExecutables},
+    TypeGroup{"3D models", k3dModels},
+};
+
+} // namespace
+
+std::span<const TypeGroup> typeGroups() noexcept
+{
+    return kTypeGroups;
+}
+
+std::string typeGroupDescription(const TypeGroup& group)
+{
+    constexpr std::size_t kTypesPerLine = 8; // long groups wrap: a taller, narrower tooltip
+    std::string description(group.name);
+    description += ':';
+    for (std::size_t index = 0; index < group.extensions.size(); ++index) {
+        if (index % kTypesPerLine == 0) {
+            description += '\n';
+        }
+        else {
+            description += ", ";
+        }
+        description += group.extensions[index];
+    }
+    return description;
 }
 
 int progressPercent(std::size_t current, std::size_t total) noexcept

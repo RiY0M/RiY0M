@@ -57,7 +57,7 @@ std::streamsize readChunk(std::ifstream& stream, std::vector<char>& buffer, cons
     return stream.gcount();
 }
 
-bool sameBytes(const fs::path& fileA, const fs::path& fileB, const std::stop_token& stopToken)
+bool sameBytes(const fs::path& fileA, const fs::path& fileB, const ScanControl& control)
 {
     std::ifstream streamA = openForReading(fileA);
     std::ifstream streamB = openForReading(fileB);
@@ -66,9 +66,7 @@ bool sameBytes(const fs::path& fileA, const fs::path& fileB, const std::stop_tok
     std::vector<char> bufferB(kChunkSize);
 
     while (true) {
-        if (stopToken.stop_requested()) {
-            throw OperationCancelled{};
-        }
+        control.checkpoint();
 
         const std::streamsize countA = readChunk(streamA, bufferA, fileA);
         const std::streamsize countB = readChunk(streamB, bufferB, fileB);
@@ -90,12 +88,13 @@ bool sameBytes(const fs::path& fileA, const fs::path& fileB, const std::stop_tok
 
 } // namespace
 
-FolderListing listEntries(const fs::path& folder, bool recursive)
+FolderListing listEntries(const fs::path& folder, bool recursive, const ScanControl& control)
 {
     FolderListing listing;
     std::vector<fs::path> pending{fs::path{}}; // folders still to list, relative to `folder`
 
     while (!pending.empty()) {
+        control.checkpoint();
         const fs::path relativeFolder = pending.back();
         pending.pop_back();
         const bool isRoot = relativeFolder.empty();
@@ -144,7 +143,7 @@ std::vector<fs::path> getFiles(const fs::path& folder, bool recursive)
 }
 
 bool filesAreIdentical(const fs::path& fileA, const fs::path& fileB, bool deepComparison,
-                       const std::stop_token& stopToken)
+                       const ScanControl& control)
 {
     if (fs::file_size(fileA) != fs::file_size(fileB)) {
         return false;
@@ -155,7 +154,7 @@ bool filesAreIdentical(const fs::path& fileA, const fs::path& fileB, bool deepCo
     }
 
     // Byte comparison: no collision risk, and it stops at the first difference.
-    return sameBytes(fileA, fileB, stopToken);
+    return sameBytes(fileA, fileB, control);
 }
 
 void copyEntry(const fs::path& source, const fs::path& destination)

@@ -222,10 +222,10 @@ FC_TEST(filesAreIdentical_honors_stop_token)
     const auto b = dir.write("b", "abc");
     std::stop_source source; // NOLINT(misc-const-correctness): request_stop() is not const everywhere
     source.request_stop();
-    FC_CHECK_THROWS_AS((void)fc::FileManager::filesAreIdentical(a, b, true, source.get_token()),
+    FC_CHECK_THROWS_AS((void)fc::FileManager::filesAreIdentical(a, b, true, fc::ScanControl{source.get_token(), nullptr}),
                        fc::OperationCancelled);
     // A shallow comparison does not read the files and is not interrupted.
-    FC_CHECK(fc::FileManager::filesAreIdentical(a, b, false, source.get_token()));
+    FC_CHECK(fc::FileManager::filesAreIdentical(a, b, false, fc::ScanControl{source.get_token(), nullptr}));
 }
 
 // ---------------------------------------------------------------------------

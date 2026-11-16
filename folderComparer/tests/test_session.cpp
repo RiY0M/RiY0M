@@ -9,6 +9,8 @@
 #include "core/FolderManager.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <set>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -108,13 +110,12 @@ FC_TEST(session_starts_empty)
     FC_CHECK(!session.canUndo());
 }
 
-FC_TEST(session_all_differences_lists_each_category_in_order)
+FC_TEST(session_all_differences_are_sorted_by_name_across_categories)
 {
     const SessionFixture fixture;
     FC_CHECK_EQ(describe(fixture.session.rows(fc::Filter::AllDifferences)),
-                (std::vector<std::string>{"diff.txt=DIFFERENT", "only_a.txt=ONLY A", "photos/=ONLY A",
-                                          "common/new_in_b.txt=ONLY B", "only_b.txt=ONLY B",
-                                          "z_only_b.txt=ONLY B"}));
+                (std::vector<std::string>{"common/new_in_b.txt=ONLY B", "diff.txt=DIFFERENT", "only_a.txt=ONLY A",
+                                          "only_b.txt=ONLY B", "photos/=ONLY A", "z_only_b.txt=ONLY B"}));
     FC_CHECK_EQ(describe(fixture.session.rows(fc::Filter::Different)),
                 (std::vector<std::string>{"diff.txt=DIFFERENT"}));
 }
@@ -717,4 +718,487 @@ FC_TEST(session_delete_both_is_refused_for_one_sided_rows)
     SessionFixture fixture;
     FC_CHECK_THROWS_AS(fixture.session.apply("only_a.txt", RowCommand::DeleteBoth), std::logic_error);
     FC_CHECK_THROWS_AS(fixture.session.apply(native("photos"), RowCommand::DeleteBoth), std::logic_error);
+}
+
+// ---------------------------------------------------------------------------
+// Selection and mass actions
+// ---------------------------------------------------------------------------
+
+FC_TEST(selection_only_rows_offering_commands_are_selectable)
+{
+    SessionFixture fixture;
+    FC_CHECK(fixture.row("diff.txt").selectable);
+    FC_CHECK(!fixture.row("diff.txt").selected);
+
+    fixture.session.toggleExpanded(native("photos"));
+    fixture.session.apply(native("photos/a.jpg"), RowCommand::Skip);
+    FC_CHECK(fixture.row("photos/a.jpg").selectable);  // Undo
+    FC_CHECK(!fixture.row("photos").selectable);       // blocked by its content's action
+    FC_CHECK_THROWS_AS(fixture.session.setSelected(native("photos"), true), std::invalid_argument);
+    FC_CHECK_THROWS_AS(fixture.session.setSelected("same.txt", true), std::invalid_argument);
+
+    fixture.session.setSelected("diff.txt", true);
+    FC_CHECK(fixture.row("diff.txt").selected);
+    FC_CHECK(fixture.session.isSelected("diff.txt"));
+    fixture.session.setSelected("diff.txt", false);
+    FC_CHECK_EQ(fixture.session.selectionCount(), std::size_t{0});
+}
+
+FC_TEST(selection_select_all_follows_the_view)
+{
+    SessionFixture fixture;
+    FC_CHECK(fixture.session.selectionState(fc::Filter::OnlyB) == fc::SelectionState::None);
+
+    fixture.session.setSelected("only_b.txt", true);
+    FC_CHECK(fixture.session.selectionState(fc::Filter::OnlyB) == fc::SelectionState::Some);
+
+    fixture.session.setAllSelected(fc::Filter::OnlyB, true);
+    FC_CHECK(fixture.session.selectionState(fc::Filter::OnlyB) == fc::SelectionState::All);
+    FC_CHECK_EQ(fixture.session.selectionCount(), std::size_t{3});
+    FC_CHECK(fixture.session.selectionState(fc::Filter::OnlyA) == fc::SelectionState::None);
+    FC_CHECK(fixture.session.selectionState(fc::Filter::AllDifferences) == fc::SelectionState::Some);
+
+    fixture.session.setAllSelected(fc::Filter::OnlyB, false);
+    FC_CHECK_EQ(fixture.session.selectionCount(), std::size_t{0});
+}
+
+FC_TEST(selection_offers_only_the_commands_common_to_every_row)
+{
+    SessionFixture fixture;
+    FC_CHECK(fixture.session.commonCommands().empty());
+
+    fixture.session.setSelected("diff.txt", true);
+    FC_CHECK_EQ(fixture.session.commonCommands(),
+                (std::vector<RowCommand>{RowCommand::CopyAToB, RowCommand::CopyBToA, RowCommand::DeleteA,
+                                         RowCommand::DeleteB, RowCommand::DeleteBoth, RowCommand::Skip}));
+
+    fixture.session.setSelected("only_a.txt", true);
+    FC_CHECK_EQ(fixture.session.commonCommands(),
+                (std::vector<RowCommand>{RowCommand::CopyAToB, RowCommand::DeleteA, RowCommand::Skip}));
+
+    fixture.session.setSelected("only_b.txt", true);
+    FC_CHECK_EQ(fixture.session.commonCommands(), (std::vector<RowCommand>{RowCommand::Skip}));
+    FC_CHECK_THROWS_AS((void)fixture.session.applyToSelection(RowCommand::DeleteA), std::logic_error);
+    FC_CHECK(!fixture.session.canUndo()); // nothing was applied
+}
+
+FC_TEST(mass_action_is_one_action_for_undo_and_redo)
+{
+    SessionFixture fixture;
+    fixture.session.setSelected("diff.txt", true);
+    fixture.session.setSelected("only_a.txt", true);
+
+    FC_CHECK(fixture.session.applyToSelection(RowCommand::CopyAToB).empty());
+    FC_CHECK_EQ(fc::test::readFile(fixture.b / "diff.txt"), std::string("version A"));
+    FC_CHECK_EQ(fc::test::readFile(fixture.b / "only_a.txt"), std::string("only in A"));
+    FC_CHECK_EQ(fixture.session.selectionCount(), std::size_t{2}); // kept: Undo is now common
+    FC_CHECK_EQ(fixture.session.commonCommands(), (std::vector<RowCommand>{RowCommand::Undo}));
+
+    FC_CHECK(fixture.session.undoLast()); // both at once
+    FC_CHECK_EQ(fc::test::readFile(fixture.b / "diff.txt"), std::string("version B!"));
+    FC_CHECK(!fs::exists(fixture.b / "only_a.txt"));
+    FC_CHECK(!fixture.session.canUndo());
+
+    FC_CHECK(fixture.session.redoLast()); // both at once
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{2});
+    FC_CHECK(fs::exists(fixture.b / "only_a.txt"));
+    FC_CHECK(fixture.session.undoLast());
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{0});
+}
+
+FC_TEST(mass_undo_of_the_selection_is_redone_as_one)
+{
+    SessionFixture fixture;
+    fixture.session.setAllSelected(fc::Filter::OnlyB, true);
+    FC_CHECK(fixture.session.applyToSelection(RowCommand::Skip).empty());
+    FC_CHECK(fixture.session.summaryCounts(fc::SummaryItem::Skipped) == ef(3, 0));
+
+    FC_CHECK(fixture.session.applyToSelection(RowCommand::Undo).empty());
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{0});
+    FC_CHECK(fixture.session.redoLast());
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{3});
+}
+
+FC_TEST(mass_action_on_a_folder_covers_its_selected_content)
+{
+    SessionFixture fixture;
+    fixture.session.toggleExpanded(native("photos"));
+    fixture.session.setSelected(native("photos"), true);
+    fixture.session.setSelected(native("photos/a.jpg"), true);
+
+    FC_CHECK(fixture.session.applyToSelection(RowCommand::DeleteA).empty()); // no conflict on a.jpg
+    FC_CHECK(!fs::exists(fixture.a / "photos"));
+    FC_CHECK(fixture.session.actionOf(native("photos")) == RowCommand::DeleteA);
+    FC_CHECK(!fixture.session.actionOf(native("photos/a.jpg")).has_value()); // inherited
+    FC_CHECK_EQ(fixture.session.selectionCount(), std::size_t{1}); // a.jpg is no longer selectable
+}
+
+FC_TEST(mass_action_reports_failures_and_applies_the_rest)
+{
+    SessionFixture fixture;
+    fixture.session.setSelected("only_b.txt", true);
+    fixture.session.setSelected("z_only_b.txt", true);
+    fs::remove(fixture.b / "z_only_b.txt"); // vanished after the comparison
+
+    const auto failures = fixture.session.applyToSelection(RowCommand::CopyBToA);
+    FC_REQUIRE_EQ(failures.size(), std::size_t{1});
+    FC_CHECK(failures.front().path == fs::path("z_only_b.txt"));
+    FC_CHECK(!failures.front().message.empty());
+    FC_CHECK(fs::exists(fixture.a / "only_b.txt"));
+    FC_CHECK(fixture.session.actionOf("only_b.txt") == RowCommand::CopyBToA);
+    FC_CHECK(!fixture.session.actionOf("z_only_b.txt").has_value());
+}
+
+FC_TEST(new_comparison_clears_the_selection)
+{
+    SessionFixture fixture;
+    fixture.session.setAllSelected(fc::Filter::AllDifferences, true);
+    FC_CHECK(fixture.session.selectionCount() > 0);
+    fixture.compare();
+    FC_CHECK_EQ(fixture.session.selectionCount(), std::size_t{0});
+}
+
+// ---------------------------------------------------------------------------
+// Sorting, type filter, selection counts
+// ---------------------------------------------------------------------------
+
+FC_TEST(session_sorts_by_name_ignoring_case_in_both_orders)
+{
+    const TempDir dir;
+    for (const char* name : {"b.txt", "A.txt", "c.TXT", "Docs/z.txt", "Docs/Y.txt", "Docs/Sub/x.txt"}) {
+        dir.write(fs::path("A") / name, "x");
+    }
+    dir.makeFolder("B");
+    fc::ComparisonSession session;
+    session.setResult(dir / "A", dir / "B",
+                      fc::FolderManager::compare(dir / "A", dir / "B", {.deepComparison = false, .recursive = true}));
+    session.toggleExpanded("Docs");
+
+    FC_CHECK_EQ(describe(session.rows(fc::Filter::OnlyA)),
+                (std::vector<std::string>{"A.txt=ONLY A", "b.txt=ONLY A", "c.TXT=ONLY A", "Docs/=ONLY A",
+                                          "  Sub/=ONLY A", "  Y.txt=ONLY A", "  z.txt=ONLY A"}));
+
+    session.setSortOrder(fc::SortOrder::Descending);
+    FC_CHECK(session.sortOrder() == fc::SortOrder::Descending);
+    FC_CHECK_EQ(describe(session.rows(fc::Filter::OnlyA)),
+                (std::vector<std::string>{"Docs/=ONLY A", "  Sub/=ONLY A", "  z.txt=ONLY A", "  Y.txt=ONLY A",
+                                          "c.TXT=ONLY A", "b.txt=ONLY A", "A.txt=ONLY A"})); // sub-folders stay first
+
+    session.setResult(dir / "A", dir / "B", fc::ComparisonResult{});
+    FC_CHECK(session.sortOrder() == fc::SortOrder::Descending); // a display preference: kept
+}
+
+FC_TEST(session_file_types_follow_the_view)
+{
+    SessionFixture fixture;
+    const auto all = fixture.session.fileTypes(fc::Filter::AllDifferences);
+    FC_CHECK_EQ(all.size(), std::size_t{2});
+    FC_CHECK_EQ(all.at("TXT"), std::size_t{5}); // diff, only_a, only_b, z_only_b, common/new_in_b
+    FC_CHECK_EQ(all.at("JPG"), std::size_t{3});
+
+    const auto onlyA = fixture.session.fileTypes(fc::Filter::OnlyA);
+    FC_CHECK_EQ(onlyA.at("TXT"), std::size_t{1});
+    FC_CHECK_EQ(onlyA.at("JPG"), std::size_t{3});
+    const auto onlyB = fixture.session.fileTypes(fc::Filter::OnlyB);
+    FC_CHECK_EQ(onlyB.size(), std::size_t{1}); // no image only in B
+    FC_CHECK_EQ(onlyB.at("TXT"), std::size_t{3});
+
+    FC_CHECK(fixture.session.fileTypes(fc::Filter::Skipped).empty());
+    fixture.session.apply(native("photos"), RowCommand::Skip); // a skipped folder brings its content
+    fixture.session.apply("diff.txt", RowCommand::Skip);
+    const auto skipped = fixture.session.fileTypes(fc::Filter::Skipped);
+    FC_CHECK_EQ(skipped.at("JPG"), std::size_t{3});
+    FC_CHECK_EQ(skipped.at("TXT"), std::size_t{1});
+}
+
+FC_TEST(session_type_filter_hides_folders_without_match_and_counts_what_matches)
+{
+    SessionFixture fixture;
+    fixture.dir.write("A/docs/readme.txt", "x"); // a missing folder without any image
+    fixture.compare();
+    fixture.session.toggleExpanded(native("photos"));
+    fixture.session.setTypeFilter(std::set<std::string>{"JPG"});
+
+    // docs/ (no image) and photos/empty/ (nothing) are hidden; counts are the images only.
+    FC_CHECK_EQ(describe(fixture.session.rows(fc::Filter::OnlyA)),
+                (std::vector<std::string>{"photos/=ONLY A", "  2023/=ONLY A", "  a.jpg=ONLY A"}));
+    FC_CHECK_EQ(fixture.row("photos").detail, std::string("D(1) F(3)"));
+    FC_CHECK_EQ(fixture.row("photos/2023").detail, std::string("D(0) F(2)"));
+    FC_CHECK(fixture.session.rows(fc::Filter::Different).empty());
+
+    fixture.session.setTypeFilter(std::set<std::string>{"TXT"});
+    FC_CHECK_EQ(describe(fixture.session.rows(fc::Filter::OnlyA)),
+                (std::vector<std::string>{"docs/=ONLY A", "only_a.txt=ONLY A"}));
+
+    fixture.session.setTypeFilter(std::nullopt); // everything again, full counts
+    FC_CHECK_EQ(fixture.row("photos").detail, std::string("D(2) F(3)"));
+    FC_CHECK_EQ(fixture.session.rows(fc::Filter::OnlyA).size(), std::size_t{6});
+}
+
+FC_TEST(session_type_filter_with_several_or_no_types)
+{
+    SessionFixture fixture;
+    fixture.session.setTypeFilter(std::set<std::string>{"JPG", "TXT"});
+    FC_CHECK_EQ(fixture.session.rows(fc::Filter::AllDifferences).size(), std::size_t{6});
+    fixture.session.setTypeFilter(std::set<std::string>{}); // no type at all: nothing
+    FC_CHECK(fixture.session.rows(fc::Filter::AllDifferences).empty());
+}
+
+FC_TEST(session_type_filter_clears_the_selection_and_resets_with_a_new_comparison)
+{
+    SessionFixture fixture;
+    fixture.session.setSelected("diff.txt", true);
+    fixture.session.setTypeFilter(std::set<std::string>{"JPG"});
+    FC_CHECK_EQ(fixture.session.selectionCount(), std::size_t{0});
+
+    fixture.compare();
+    FC_CHECK(!fixture.session.typeFilter().has_value());
+}
+
+FC_TEST(session_mass_buttons_are_grouped_like_rows)
+{
+    using fc::ComparisonSession;
+    const auto labels = [](const std::vector<fc::RowButton>& buttons) {
+        std::vector<std::string> result;
+        result.reserve(buttons.size());
+        for (const auto& button : buttons) {
+            result.push_back(button.label);
+        }
+        return result;
+    };
+    // Different rows only: menus.
+    const auto different = ComparisonSession::massButtons({RowCommand::CopyAToB, RowCommand::CopyBToA, RowCommand::DeleteA,
+                                                           RowCommand::DeleteB, RowCommand::DeleteBoth, RowCommand::Skip});
+    FC_CHECK_EQ(labels(different), (std::vector<std::string>{"Copy", "Delete", "Skip"}));
+    FC_CHECK_EQ(different.at(0).choices.size(), std::size_t{2});
+    FC_CHECK_EQ(different.at(1).choices.size(), std::size_t{3});
+
+    // Single commands: plain buttons with the row labels.
+    const auto onlyA = ComparisonSession::massButtons({RowCommand::CopyAToB, RowCommand::DeleteA, RowCommand::Skip});
+    FC_CHECK_EQ(labels(onlyA), (std::vector<std::string>{"Copy \u2192 B", "Delete A", "Skip"}));
+    FC_CHECK(onlyA.at(0).choices.empty());
+
+    FC_CHECK_EQ(labels(ComparisonSession::massButtons({RowCommand::Undo})), (std::vector<std::string>{"Undo"}));
+    FC_CHECK(ComparisonSession::massButtons({}).empty());
+}
+
+FC_TEST(session_selection_counts_cover_folder_content)
+{
+    SessionFixture fixture;
+    FC_CHECK(fixture.session.selectionCounts() == fc::EntryCounts{});
+    fixture.session.toggleExpanded(native("photos"));
+    fixture.session.setSelected(native("photos"), true);     // D(2) F(3) inside
+    fixture.session.setSelected(native("photos/a.jpg"), true); // already counted with photos/
+    fixture.session.setSelected("diff.txt", true);
+    FC_CHECK(fixture.session.selectionCounts() == ef(4, 3));
+}
+
+// ---------------------------------------------------------------------------
+// Folder actions under a type filter: only the matching files
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// photos/ (only in A) also holds a text file next to the images.
+struct MixedFolderFixture : SessionFixture {
+    MixedFolderFixture()
+    {
+        dir.write("A/photos/info.txt", "notes");
+        compare();
+        session.setTypeFilter(std::set<std::string>{"JPG"});
+    }
+};
+
+} // namespace
+
+FC_TEST(filtered_folder_copy_copies_only_the_matching_files)
+{
+    MixedFolderFixture fixture;
+    fixture.session.apply(native("photos"), RowCommand::CopyAToB);
+
+    FC_CHECK(fs::exists(fixture.b / "photos/a.jpg"));
+    FC_CHECK(fs::exists(fixture.b / "photos/2023/b.jpg"));
+    FC_CHECK(fs::exists(fixture.b / "photos/2023/c.jpg"));
+    FC_CHECK(!fs::exists(fixture.b / "photos/info.txt")); // filtered out
+    FC_CHECK(!fs::exists(fixture.b / "photos/empty"));    // nothing matching inside
+
+    // The files carry the actions; the folder row reflects them and offers Undo.
+    FC_CHECK(!fixture.session.actionOf(native("photos")).has_value());
+    FC_CHECK(fixture.session.actionOf(native("photos/a.jpg")) == RowCommand::CopyAToB);
+    FC_CHECK_EQ(commands(fixture.row("photos")), (std::vector<RowCommand>{RowCommand::Undo}));
+    FC_CHECK_EQ(fixture.row("photos").statusText, std::string("COPIED \u2192 B"));
+
+    FC_CHECK(fixture.session.undoLast()); // one action: the three copies
+    FC_CHECK(!fs::exists(fixture.b / "photos"));
+    FC_CHECK(fixture.session.redoLast());
+    FC_CHECK(fs::exists(fixture.b / "photos/2023/c.jpg"));
+}
+
+FC_TEST(filtered_folder_delete_and_skip_touch_only_the_matching_files)
+{
+    MixedFolderFixture fixture;
+    fixture.session.apply(native("photos"), RowCommand::DeleteA);
+    FC_CHECK(!fs::exists(fixture.a / "photos/a.jpg"));
+    FC_CHECK(!fs::exists(fixture.a / "photos/2023/b.jpg"));
+    FC_CHECK(fs::exists(fixture.a / "photos/info.txt")); // kept
+    FC_CHECK(fixture.session.undoLast());
+    FC_CHECK(fs::exists(fixture.a / "photos/a.jpg"));
+
+    fixture.session.apply(native("photos"), RowCommand::Skip);
+    FC_CHECK(fixture.session.summaryCounts(fc::SummaryItem::Skipped) == ef(3, 0)); // the 3 images
+    FC_CHECK(!fixture.session.actionOf(native("photos/info.txt")).has_value());
+}
+
+FC_TEST(filtered_folder_mass_action_and_selection_counts)
+{
+    MixedFolderFixture fixture;
+    fixture.session.setSelected(native("photos"), true);
+    FC_CHECK(fixture.session.selectionCounts() == ef(3, 2)); // photos/, 2023/ and the 3 images
+
+    FC_CHECK(fixture.session.applyToSelection(RowCommand::CopyAToB).empty());
+    FC_CHECK(fs::exists(fixture.b / "photos/a.jpg"));
+    FC_CHECK(!fs::exists(fixture.b / "photos/info.txt"));
+    FC_CHECK(fixture.session.undoLast());
+    FC_CHECK(!fs::exists(fixture.b / "photos"));
+}
+
+FC_TEST(filtered_folder_partial_failure_applies_the_rest_and_reports)
+{
+    MixedFolderFixture fixture;
+    fs::remove(fixture.a / "photos/a.jpg"); // vanished after the comparison
+
+    FC_CHECK_THROWS_AS(fixture.session.apply(native("photos"), RowCommand::CopyAToB), std::runtime_error);
+    FC_CHECK(fs::exists(fixture.b / "photos/2023/b.jpg"));
+    FC_CHECK(fs::exists(fixture.b / "photos/2023/c.jpg"));
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{2});
+    FC_CHECK(fixture.session.undoLast()); // the two copies, as one action
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{0});
+}
+
+FC_TEST(unfiltered_folder_action_still_takes_the_whole_folder)
+{
+    SessionFixture fixture;
+    fixture.dir.write("A/photos/info.txt", "notes");
+    fixture.compare();
+    fixture.session.apply(native("photos"), RowCommand::CopyAToB);
+    FC_CHECK(fs::exists(fixture.b / "photos/info.txt"));
+    FC_CHECK(fs::is_directory(fixture.b / "photos/empty"));
+    FC_CHECK(fixture.session.actionOf(native("photos")) == RowCommand::CopyAToB);
+}
+
+FC_TEST(filtered_folder_undo_button_reverts_its_files)
+{
+    MixedFolderFixture fixture;
+    fixture.session.apply(native("photos"), RowCommand::DeleteA);
+    FC_CHECK(fixture.row("photos").selectable);
+
+    fixture.session.apply(native("photos"), RowCommand::Undo); // the folder's Undo
+    FC_CHECK(fs::exists(fixture.a / "photos/a.jpg"));
+    FC_CHECK(fs::exists(fixture.a / "photos/2023/c.jpg"));
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{0});
+    FC_CHECK_EQ(fixture.row("photos").buttons.size(), std::size_t{3}); // Copy, Delete, Skip again
+
+    FC_CHECK(fixture.session.redoLast()); // redone as one
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{3});
+    FC_CHECK(!fs::exists(fixture.a / "photos/a.jpg"));
+}
+
+FC_TEST(filtered_folder_with_some_files_done_offers_nothing_folder_wide)
+{
+    MixedFolderFixture fixture;
+    fixture.session.toggleExpanded(native("photos"));
+    fixture.session.apply(native("photos/a.jpg"), RowCommand::Skip);
+    FC_CHECK(fixture.row("photos").buttons.empty()); // mixed: each file keeps its own buttons
+    FC_CHECK_EQ(fixture.row("photos/2023/b.jpg").buttons.size(), std::size_t{3});
+
+    // Different actions on every file: Undo, without a single status.
+    fixture.session.apply(native("photos/2023"), RowCommand::CopyAToB);
+    FC_CHECK_EQ(commands(fixture.row("photos")), (std::vector<RowCommand>{RowCommand::Undo}));
+    FC_CHECK_EQ(fixture.row("photos").statusText, std::string("ONLY A"));
+    fixture.session.apply(native("photos"), RowCommand::Undo);
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{0});
+}
+
+FC_TEST(filtered_folder_mass_undo_from_the_selection)
+{
+    MixedFolderFixture fixture;
+    fixture.session.setSelected(native("photos"), true);
+    FC_CHECK(fixture.session.applyToSelection(RowCommand::Skip).empty());
+    FC_CHECK_EQ(fixture.session.commonCommands(), (std::vector<RowCommand>{RowCommand::Undo}));
+    FC_CHECK(fixture.session.applyToSelection(RowCommand::Undo).empty());
+    FC_CHECK_EQ(fixture.session.actionCount(), std::size_t{0});
+}
+
+// ---------------------------------------------------------------------------
+// Tree of check boxes
+// ---------------------------------------------------------------------------
+
+FC_TEST(selection_of_every_item_of_a_folder_selects_the_folder)
+{
+    SessionFixture fixture;
+    fixture.session.toggleExpanded(native("photos"));
+    fixture.session.toggleExpanded(native("photos/2023"));
+
+    fixture.session.setSelected(native("photos/2023/b.jpg"), true);
+    FC_CHECK(!fixture.session.isSelected(native("photos/2023")));
+    fixture.session.setSelected(native("photos/2023/c.jpg"), true);
+    FC_CHECK(fixture.session.isSelected(native("photos/2023"))); // all its content
+    FC_CHECK(!fixture.session.isSelected(native("photos")));    // empty/ and a.jpg are not
+
+    fixture.session.setSelected(native("photos/empty"), true);
+    fixture.session.setSelected(native("photos/a.jpg"), true);
+    FC_CHECK(fixture.session.isSelected(native("photos"))); // up the tree
+}
+
+FC_TEST(unselecting_an_item_unselects_its_folders)
+{
+    SessionFixture fixture;
+    fixture.session.toggleExpanded(native("photos"));
+    fixture.session.setSelected(native("photos"), true); // brings its whole content
+    FC_CHECK(fixture.session.isSelected(native("photos/2023/b.jpg")));
+    FC_CHECK(fixture.session.isSelected(native("photos/a.jpg")));
+
+    fixture.session.setSelected(native("photos/2023/b.jpg"), false);
+    FC_CHECK(!fixture.session.isSelected(native("photos/2023")));
+    FC_CHECK(!fixture.session.isSelected(native("photos")));
+    FC_CHECK(fixture.session.isSelected(native("photos/2023/c.jpg"))); // the others stay
+    FC_CHECK(fixture.session.isSelected(native("photos/a.jpg")));
+
+    fixture.session.setSelected(native("photos/2023/b.jpg"), true); // complete again
+    FC_CHECK(fixture.session.isSelected(native("photos")));
+
+    fixture.session.setSelected(native("photos"), false); // and its content with it
+    FC_CHECK_EQ(fixture.session.selectionCount(), std::size_t{0});
+}
+
+FC_TEST(selection_with_a_type_filter_follows_the_shown_content)
+{
+    SessionFixture fixture;
+    fixture.dir.write("A/photos/info.txt", "notes");
+    fixture.compare();
+    fixture.session.setTypeFilter(std::set<std::string>{"JPG"});
+    fixture.session.toggleExpanded(native("photos"));
+
+    // Shown: 2023/ (b, c) and a.jpg; info.txt and empty/ are filtered out.
+    fixture.session.setSelected(native("photos/2023"), true);
+    fixture.session.setSelected(native("photos/a.jpg"), true);
+    FC_CHECK(fixture.session.isSelected(native("photos")));
+    FC_CHECK(!fixture.session.isSelected(native("photos/info.txt")));
+}
+
+FC_TEST(selection_counts_include_the_missing_folders_above)
+{
+    SessionFixture fixture;
+    fixture.session.toggleExpanded(native("photos"));
+    fixture.session.toggleExpanded(native("photos/2023"));
+
+    // One file deep in a missing folder: photos/ and 2023/ would be created too.
+    fixture.session.setSelected(native("photos/2023/b.jpg"), true);
+    FC_CHECK(fixture.session.selectionCounts() == ef(1, 2));
+
+    fixture.session.setSelected(native("photos/a.jpg"), true); // same parents, counted once
+    FC_CHECK(fixture.session.selectionCounts() == ef(2, 2));
+
+    fixture.session.setSelected("diff.txt", true); // a common folder above: nothing more
+    FC_CHECK(fixture.session.selectionCounts() == ef(3, 2));
 }

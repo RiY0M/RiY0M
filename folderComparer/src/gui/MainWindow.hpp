@@ -10,8 +10,12 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
+#include <set>
+#include <string>
+#include <utility>
 #include <thread>
 #include <vector>
 
@@ -22,8 +26,10 @@ class QGridLayout;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QProgressBar;
 class QScrollArea;
+class QToolButton;
 class QPushButton;
 class QString;
 class QVBoxLayout;
@@ -73,10 +79,13 @@ private:
 
     // File list
     void buildFileList(QVBoxLayout* mainLayout);
+    void buildListHeader(QVBoxLayout* frameLayout);
     void populateFileList();
     QWidget* buildRow(const Row& row);
+    /// A row / mass action button: colors, fixed width of its kind, menu if it has choices.
+    QPushButton* makeActionButton(const RowButton& rowButton, const std::function<void(RowCommand)>& run);
     /// Fixed width of a row button, the same for every button of its kind.
-    [[nodiscard]] int rowButtonWidth(RowCommand command, const QFont& font);
+    [[nodiscard]] int rowButtonWidth(RowCommand command);
 
     // Compare
     void compareFolders();
@@ -92,6 +101,31 @@ private:
     void toggleFolder(const std::filesystem::path& relativePath);
     void undoLast();
     void redoLast();
+
+    // Scan control
+    void togglePause();
+    void updatePauseUi();
+    void stopComparison();
+    void scanStopped();
+    void endScanControls();
+
+    // Sorting / type filter
+    void toggleSortOrder();
+    void updateSortButton();
+    void buildTypesMenu();
+    void updateTypeChecks();
+    void applyTypeFilter(std::optional<std::set<std::string>> types);
+    /// The types currently shown, "All types" made explicit with the view's types.
+    [[nodiscard]] std::set<std::string> selectedTypes() const;
+    /// Apply a set of types (back to "All types" when it covers the whole view).
+    void applyTypeSelection(std::set<std::string> types);
+    void updateTypesButton();
+
+    // Selection / mass actions
+    void selectRow(const std::filesystem::path& relativePath, bool selected);
+    void selectAllClicked();
+    void updateSelectionBar();
+    void runMassCommand(RowCommand command);
     void focusFileList();
 
     // Opening files
@@ -116,6 +150,17 @@ private:
     QLabel* progressLabel_ = nullptr; ///< "Ready", "Scanning...", "Comparison failed"
     FractionLabel* fraction_ = nullptr;
     QLabel* percentLabel_ = nullptr;
+    QToolButton* pauseButton_ = nullptr;
+    QToolButton* stopButton_ = nullptr;
+    QCheckBox* selectAllBox_ = nullptr;
+    QLabel* selectionLabel_ = nullptr;
+    std::array<QHBoxLayout*, 3> massSlots_{}; ///< Copy, Delete, Skip / Undo columns of the header
+    QToolButton* sortButton_ = nullptr;
+    QToolButton* typesButton_ = nullptr;
+    QMenu* typesMenu_ = nullptr;
+    QCheckBox* allTypesCheck_ = nullptr;
+    std::vector<std::pair<std::string, QCheckBox*>> typeChecks_;
+    std::vector<std::pair<std::vector<std::string>, QCheckBox*>> groupChecks_; ///< group's types in the view
     QScrollArea* scrollArea_ = nullptr;
     QWidget* fileContainer_ = nullptr;
     QVBoxLayout* fileLayout_ = nullptr;
@@ -129,6 +174,8 @@ private:
 
     ComparisonSession session_;
     Filter currentFilter_ = kDefaultFilter;
+
+    PauseControl pauseControl_; // shared with the scanning thread: outlives it
 
     // Declared last: destroyed (stopped and joined) before everything above.
     std::jthread worker_;

@@ -4,6 +4,7 @@ add_executable(fc_tests
     test_file_manager.cpp
     test_folder_manager.cpp
     test_presentation.cpp
+    test_scan_control.cpp
     test_session.cpp
 )
 target_link_libraries(fc_tests PRIVATE fc_core)

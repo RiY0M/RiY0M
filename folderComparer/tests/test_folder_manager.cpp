@@ -171,7 +171,7 @@ FC_TEST(compare_can_be_cancelled)
                                ++calls;
                                source.request_stop();
                            },
-                           source.get_token()),
+                           fc::ScanControl{source.get_token(), nullptr}),
                        fc::OperationCancelled);
     FC_CHECK_EQ(calls, std::size_t{1});
 }

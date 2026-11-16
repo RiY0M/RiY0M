@@ -49,6 +49,7 @@ add_library(fc_core STATIC
     src/core/FolderManager.cpp
     src/core/LiveCounts.cpp
     src/core/Presentation.cpp
+    src/core/ScanControl.cpp
 )
 target_include_directories(fc_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(fc_core PUBLIC cxx_std_20)

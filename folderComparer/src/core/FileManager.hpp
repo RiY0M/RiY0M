@@ -1,21 +1,17 @@
 #pragma once
 
+#include "core/ScanControl.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace fc {
 
-/// Raised when an operation is interrupted through its std::stop_token.
-class OperationCancelled final : public std::runtime_error {
-public:
-    OperationCancelled() : std::runtime_error("Operation cancelled") {}
-};
 
 /// Raised when the source of a copy vanished since the comparison.
 class SourceMissingError final : public std::runtime_error {
@@ -59,8 +55,9 @@ namespace FileManager {
 /// recursive == false: only the files directly inside `folder`, no folder.
 /// The trash folder (kTrashFolderName) at the root is ignored.
 /// Throws std::filesystem::filesystem_error if `folder` itself cannot be listed;
-/// unreadable sub-folders are skipped.
-[[nodiscard]] FolderListing listEntries(const std::filesystem::path& folder, bool recursive);
+/// unreadable sub-folders are skipped. `control` is checked for each folder.
+[[nodiscard]] FolderListing listEntries(const std::filesystem::path& folder, bool recursive,
+                                        const ScanControl& control = {});
 
 /// listEntries(folder, recursive).files
 [[nodiscard]] std::vector<std::filesystem::path> getFiles(const std::filesystem::path& folder,
@@ -68,11 +65,11 @@ namespace FileManager {
 
 /// True if both files have the same size and, when `deepComparison` is set,
 /// the same bytes. Throws std::filesystem::filesystem_error / std::runtime_error
-/// on I/O errors and OperationCancelled when `stopToken` is triggered.
+/// on I/O errors; `control` is checked for each 1 MiB chunk.
 [[nodiscard]] bool filesAreIdentical(const std::filesystem::path& fileA,
                                      const std::filesystem::path& fileB,
                                      bool deepComparison = true,
-                                     const std::stop_token& stopToken = {});
+                                     const ScanControl& control = {});
 
 /// Copy a file, or a folder with everything inside it, to `destination`, which
 /// must not exist (its parent must). File modification times are preserved.

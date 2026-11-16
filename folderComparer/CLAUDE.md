@@ -18,7 +18,10 @@ Application de bureau (C++20 + Qt 6 Widgets) pour comparer deux gros dossiers
    `Expanding` : elle remplit la hauteur de la ligne, comme les boutons), suivie de la progression en vraie
    fraction (`FractionLabel` : courant au-dessus d'un trait, total en dessous) et du pourcentage
    (`progressPercent`). À la fin, le texte reste tel que le scan l'a laissé (n sur n, 100 %). *Entrée* dans un
-   champ de dossier lance la comparaison ; la fenêtre reste réactive, la fermer annule la comparaison.
+   champ de dossier lance la comparaison. **Pause / Reprise / Arrêt** (icônes `SP_MediaPause` / `SP_MediaPlay` /
+   `SP_MediaStop` à droite de la barre, comme la copie de l'Explorateur) : en pause la barre passe en jaune ; le
+   scan s'arrête à des points de contrôle (`ScanControl::checkpoint` : chaque dossier listé, chaque fichier,
+   chaque Mo d'une comparaison profonde) ; l'arrêt affiche « Comparison stopped » sans résultat ; la fenêtre reste réactive, la fermer annule la comparaison.
 5. **Classement** de chaque fichier **et dossier** de A ∪ B : `Identical`, `Different`, `Only A`, `Only B`.
    Un dossier présent d'un seul côté est *Only A/B* ; un dossier présent des deux côtés est *Different*
    s'il contient une différence, *Identical* sinon. Listes triées par chaîne native (`fc::pathLess`).
@@ -26,7 +29,7 @@ Application de bureau (C++20 + Qt 6 Widgets) pour comparer deux gros dossiers
    `E(entrées) D(dossiers) F(fichiers)` avec E = D + F, disposés ainsi :
    `Total | All differences | Only A`, `Identical | Different | Only B`, puis `Skipped` sous *Identical*.
    **Les labels de différences et *Skipped* sont les boutons de filtre** (le filtre actif a un fond coloré, sans
-   autre marque ; défaut : *All differences* = Different puis Only A puis Only B). *Total* et *Identical* sont des
+   autre marque ; défaut : *All differences* = Different, Only A et Only B, triés ensemble par nom). *Total* et *Identical* sont des
    boutons au même cadre mais ignorant la souris, pour que tous les textes s'alignent. *Skipped* liste toutes les lignes
    passées (chemin complet, triées) et compte ces lignes plus le contenu des dossiers passés.
    **Les compteurs suivent les actions de l'application** (`LiveCounts`) : l'état de la comparaison (côtés où
@@ -59,6 +62,8 @@ Application de bureau (C++20 + Qt 6 Widgets) pour comparer deux gros dossiers
      (`MainWindow::rowButtonWidth`, calculée depuis les libellés de `buttonsFor`) ;
    - Only A : `Copy → B`, `Delete A`, `Skip` ; Only B : `Copy → A`, `Delete B`, `Skip`.
    `Skip` (« vu, rien à faire ») ne touche à aucun fichier : il marque seulement la ligne.
+   Chaque ligne a trois emplacements de boutons fixes (Copy, Delete, Skip / Undo), gardés même vides, pour que
+   l'extension / `D() F()` reste alignée d'une ligne à l'autre et avec l'en-tête.
    Chaque bouton a la couleur de la ligne qu'il produit (`commandStyle`) : copie verte, suppression rouge,
    skip gris ; `Undo` garde le style par défaut.
    `Delete both` supprime les deux versions en une seule action (tout ou rien, annulable d'un coup).
@@ -74,6 +79,36 @@ Application de bureau (C++20 + Qt 6 Widgets) pour comparer deux gros dossiers
    renommage). Cette corbeille n'est jamais listée. Elle est vidée (actions définitives) à une nouvelle
    comparaison et à la fermeture, après confirmation si elle contient des données récupérables.
    Annuler une copie supprime aussi les dossiers parents qu'elle avait créés.
+9a. **En-tête de liste** (mêmes colonnes que les lignes, barre de défilement verticale toujours visible) : case
+   « tout sélectionner » (trois états, sans texte) ; **Name ▲/▼** au-dessus des noms (tri alphabétique sans tenir
+   compte de la casse, `caseInsensitiveLess`, croissant ▲ / décroissant ▼, sur toute la vue ; dans un dossier déplié
+   les sous-dossiers restent en premier ; l'ordre est conservé d'une comparaison à l'autre) ; **Types** (menu à deux
+   colonnes, cases qui ne ferment pas le menu : à gauche *All types* puis chaque extension **de la vue courante**
+   (`fileTypes(filter)`) avec son nombre de fichiers ; à droite les **groupes** `typeGroups()` — Images, Videos, Audio,
+   Text (TXT, MD, LOG… séparés du code), Documents, Spreadsheets, Presentations, Code, Archives, Fonts, Executables,
+   3D models — chacun avec une infobulle listant ses types, à trois états, désactivé si aucun de ses types n'est dans
+   la vue). Les dossiers sont toujours inclus, mais seulement ceux qui contiennent au moins un fichier retenu (sinon
+   masqués, sous-dossiers compris) et leur `D() F()` ne compte que ce qui correspond. **Avec un filtre, une action
+   sur une ligne de dossier (copie, suppression, skip, ligne ou masse) ne touche que les fichiers retenus qu'il
+   contient** (`actionTargets`) : une seule action pour Undo / Redo, portée par les fichiers ; la ligne du dossier
+   reflète ses fichiers retenus (`applyFilteredFolderState`) : actions tant qu'aucun n'est traité, `Undo` (et le
+   statut commun, ex. `COPIED → A`) quand tous le sont, rien quand c'est mixte ; son Undo / l'Undo de masse
+   annule les actions de ces fichiers (`undoTargets`). Si certains échouent, les autres sont appliqués et l'erreur
+   les liste. L'en-tête
+   « Types » du menu reste fixe au-dessus de la liste qui défile, au niveau de « Groups » ; les infobulles des
+   groupes passent à la ligne tous les 8 types. Le filtre est remis à zéro à chaque comparaison et vide la sélection.
+   À droite : le compte de la sélection `E() D() F()` aligné sur la colonne `D() F()` / extension des lignes, puis
+   trois emplacements fixes (Copy, Delete, Skip / Undo) de la largeur des boutons des lignes, gardés même vides ;
+   les actions de masse y sont groupées comme sur les lignes (`massButtons` : menus *Copy* / *Delete*).
+9b. **Actions de masse** : une case à cocher à gauche de chaque ligne qui propose au moins une commande, la case
+   d'en-tête pour toutes les lignes affichées, et **seulement les actions communes à toute la sélection** (`commonCommands`). Une action de masse est **une seule
+   action** pour Undo / Redo (`AppliedAction::group`) ; une ligne dont le dossier parent est aussi sélectionné
+   est couverte par l'action du dossier ; les lignes en échec sont listées, les autres sont traitées.
+   Les cases se comportent comme un arbre : cocher un dossier coche son contenu affiché, décocher un élément
+   décoche son contenu et ses dossiers parents, et un dossier dont tout le contenu affiché est coché se coche.
+   Le compte `E() D() F()` inclut aussi les dossiers manquants au-dessus des lignes cochées (une copie les crée),
+   même s'ils ne sont pas cochés eux-mêmes. La sélection
+   est vidée au changement de filtre et suit les actions (une ligne qui ne propose plus rien en sort).
 10. **Copie** : crée les dossiers parents, conserve les dates de modification, passe par `<cible>.fc-partial`
     puis un renommage (jamais de cible tronquée).
 11. **Erreurs** : `Copy error` / `Delete error` / `Undo error` ; un fichier illisible pendant la comparaison est
@@ -95,6 +130,7 @@ Application de bureau (C++20 + Qt 6 Widgets) pour comparer deux gros dossiers
 │   ├── FolderManager      # compare (progress + std::stop_token), normalize, validateFolders
 │   ├── ActionHistory      # copie / suppression annulables, corbeille, undo, discard
 │   ├── LiveCounts         # compteurs E/D/F recalculés avec les actions appliquées
+│   ├── ScanControl        # pause / reprise / arrêt du scan (PauseControl, OperationCancelled)
 │   ├── Presentation       # libellés, couleurs, compteurs, filtres, commandes de ligne
 │   └── ComparisonSession  # état de l'UI : arbre de lignes, dépliage, actions, règles de blocage
 ├── src/gui/         # Qt 6 Widgets : MainWindow ne fait que dessiner ce que décrit la session
@@ -147,6 +183,8 @@ Options CMake : `FC_BUILD_GUI`, `FC_BUILD_CLI`, `FC_BUILD_TESTS`, `FC_WARNINGS_A
 - Fonctions qui retournent une valeur : `[[nodiscard]]`. Enums : `enum class … : std::uint8_t`. Pas de récursion
   (piles explicites).
 - Pas d'exception qui remonte dans la boucle d'événements Qt : chaque slot attrape `std::exception`.
+- Le scan est piloté par `ScanControl` (stop_token + `PauseControl`, attente interruptible C++20) ; tester les
+  changements de concurrence avec `-fsanitize=thread`.
 - Le thread de comparaison ne touche jamais aux widgets : il poste avec
   `QMetaObject::invokeMethod(this, …, Qt::QueuedConnection)`. `worker_` (`std::jthread`) est déclaré en dernier.
 
